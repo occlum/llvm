@@ -14,6 +14,26 @@
 //===----------------------------------------------------------------------===//
 
 // FIXME: Investigate a better scheduler class once MPX is used inside LLVM.
+let isPseudo = 1 in {
+  def checkload64m : PseudoI<(outs), (ins i64mem:$src),
+                          [(int_x86_checkload addr:$src)]>; 
+  def checkload32m : PseudoI<(outs), (ins i32mem:$src),
+                          [(int_x86_checkload addr:$src)]>; 
+  def checkstore64m : PseudoI<(outs), (ins i64mem:$src), 
+                          [(int_x86_checkstore addr:$src)]>; 
+  def checkstore32m : PseudoI<(outs), (ins i32mem:$src), 
+                          [(int_x86_checkstore addr:$src)]>; 
+  def checkload64r : PseudoI<(outs), (ins GR64:$src),
+                          [(int_x86_checkload addr:$src)]>; 
+  def checkstore64r : PseudoI<(outs), (ins GR64:$src), 
+                          [(int_x86_checkstore addr:$src)]>; 
+  def checkload32r: PseudoI<(outs), (ins GR64:$src),
+                          [(int_x86_checkload addr:$src)]>; 
+  def checkstore32r: PseudoI<(outs), (ins GR64:$src), 
+                          [(int_x86_checkstore addr:$src)]>; 
+}
+
+
 let SchedRW = [WriteSystem] in {
 
 multiclass mpx_bound_make<bits<8> opc, string OpcodeStr> {

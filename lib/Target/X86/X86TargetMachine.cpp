@@ -488,7 +488,10 @@ void X86PassConfig::addPostRegAlloc() {
   addPass(createX86FloatingPointStackifierPass());
 }
 
-void X86PassConfig::addPreSched2() { addPass(createX86ExpandPseudoPass()); }
+void X86PassConfig::addPreSched2() { 
+  addPass(createX86ConstraintCheck()); 
+  addPass(createX86ExpandPseudoPass()); 
+}
 
 void X86PassConfig::addPreEmitPass() {
   if (getOptLevel() != CodeGenOpt::None) {
@@ -518,4 +521,5 @@ void X86PassConfig::addPreEmitPass2() {
   const Triple &TT = TM->getTargetTriple();
   if (!TT.isOSDarwin() && !TT.isOSWindows())
     addPass(createCFIInstrInserter());
+  addPass(createX86CFIInstrument());
 }
