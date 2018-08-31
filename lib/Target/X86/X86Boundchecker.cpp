@@ -123,11 +123,10 @@ public:
                           MachineInstr &MI);
   bool InsertCFILabel(MachineFunction &Fn);
 
-  bool CFIInstrument(MachineFunction &Fn);
+  bool RelocatePIC(MachineFunction &Fn);
+  bool ds2fs(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI, unsigned indexofRIP);
 
-private:
-  // only insert Function with indirect jmp/call
-  bool shouldInsertCFILable = false;
+  bool CFIInstrument(MachineFunction &Fn);
 };
 char X86CFIInstrument::ID = 0;
 
@@ -141,13 +140,13 @@ public:
   X86ConstraintCheck() : MachineFunctionPass(ID) {}
 
   bool runOnMachineFunction(MachineFunction &Fn) override;
-  bool ConstraintCheck(MachineFunction &Fn);
   bool ScanMF(MachineFunction &Fn);
   bool LoweringCheck(MachineFunction &Fn);
   bool LoweringMI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool ScanMBB(MachineBasicBlock *MBB);
   bool OptMI(MachineInstr *MI, bool isload);
 
+  bool hasIndirectCall(MachineFunction &Fn);
 private:
   // GuardZone size 4K
   int GuardZoneSize = 4 * 1024;
@@ -187,7 +186,7 @@ bool X86CFIInstrument::HandleRet(const TargetInstrInfo *TII,
 bool X86CFIInstrument::HandleIndirectBr(const TargetInstrInfo *TII,
                                         MachineBasicBlock &MBB,
                                         MachineInstr &MI) {
-  const DebugLoc &DL = MI.getDebugLoc();
+  /* const DebugLoc &DL = MI.getDebugLoc(); */
   outs() << "HandleIndirectBr\n";
   /* BuildMI(MBB, MI, DL, TII->get(X86::LEA64r), X86::R10); */
   return false;
@@ -196,7 +195,7 @@ bool X86CFIInstrument::HandleIndirectBr(const TargetInstrInfo *TII,
 bool X86CFIInstrument::HandleIndirectCall(const TargetInstrInfo *TII,
                                           MachineBasicBlock &MBB,
                                           MachineInstr &MI) {
-  const DebugLoc &DL = MI.getDebugLoc();
+  /* const DebugLoc &DL = MI.getDebugLoc(); */
   outs() << "HandleIndirectCall\n";
   /* BuildMI(MBB, MI, DL, TII->get(X86::LEA64r), X86::R10); */
   return false;
@@ -225,53 +224,119 @@ bool X86CFIInstrument::runOnMachineFunction(MachineFunction &Fn) {
   if (Fn.getName().startswith("_boundchecker_"))
     return false;
 
-  shouldInsertCFILable = false;
-  CFIInstrument(Fn);
-  if (shouldInsertCFILable == true)
+  bool hasIndirectCall = false;
+  hasIndirectCall = CFIInstrument(Fn);
+  if (hasIndirectCall == true)
     InsertCFILabel(Fn);
+
+  //disable if for SPEC
+  RelocatePIC(Fn);
+  return true;
+}
+bool X86CFIInstrument::ds2fs(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI, unsigned indexofRIP){
+  unsigned segregidx = indexofRIP + 4;
+  MachineOperand &MO = MBBI->getOperand(segregidx);
+  assert(segregidx < MBBI->getNumOperands() && "Out of operands bounds");
+  assert(MO.getReg() == 0 && "Segments of RIP address  is zero");
+  MO.setReg(X86::FS);
   return true;
 }
 
-bool X86CFIInstrument::CFIInstrument(MachineFunction &Fn) {
+bool X86CFIInstrument::RelocatePIC(MachineFunction &Fn) {
   for (auto &MBB : Fn) {
     if (MBB.empty())
       continue;
 
-    MachineInstr &MI = MBB.instr_back();
-    switch (MI.getOpcode()) {
-    default:
-      break;
-    // FIXME ret might have a imm to pop
-    case X86::RET:
-    case X86::RETL:
-    case X86::RETQ:
-      HandleRet(TII, MBB, MI);
-      break;
-    case X86::JMP16m:
-    case X86::JMP32m:
-    case X86::JMP64m:
-      shouldInsertCFILable = true;
-      HandleIndirectBr(TII, MBB, MI);
-      break;
-    // FIXME call is usually not an end of basicblock
-    case X86::CALL16r:
-    case X86::CALL16m:
-    case X86::CALL32r:
-    case X86::CALL32m:
-    case X86::CALL64r:
-    case X86::CALL64m:
-      shouldInsertCFILable = true;
-      HandleIndirectCall(TII, MBB, MI);
-      break;
+    MachineBasicBlock::iterator MBBI = MBB.begin(), E = MBB.end();
+    while (MBBI != E) {
+      MachineBasicBlock::iterator NMBBI = std::next(MBBI);
+
+      for (unsigned i = 0; i < MBBI->getNumOperands(); i++) {
+        MachineOperand &MO = MBBI->getOperand(i);
+        if(MO.isReg() && MO.getReg() == X86::RIP){
+          ds2fs(MBB,MBBI,i);
+          // jump out for loop to next instruction
+          break;
+        }
+      }
+      MBBI = NMBBI;
     }
   }
   return true;
+}
+
+bool X86CFIInstrument::CFIInstrument(MachineFunction &Fn) {
+  bool hasIndirectCall = false;
+  for (auto &MBB : Fn) {
+    if (MBB.empty())
+      continue;
+
+    MachineBasicBlock::iterator MBBI = MBB.begin(), E = MBB.end();
+    while (MBBI != E) {
+      MachineBasicBlock::iterator NMBBI = std::next(MBBI);
+
+      MachineInstr &MI = *MBBI;
+      switch (MI.getOpcode()) {
+      default:
+        break;
+      // FIXME ret might have a imm to pop
+      case X86::RET:
+      case X86::RETL:
+      case X86::RETQ:
+        HandleRet(TII, MBB, MI);
+        break;
+      case X86::JMP16m:
+      case X86::JMP32m:
+      case X86::JMP64m:
+        hasIndirectCall = true;
+        HandleIndirectBr(TII, MBB, MI);
+        break;
+      case X86::CALL16r:
+      case X86::CALL16m:
+      case X86::CALL32r:
+      case X86::CALL32m:
+      case X86::CALL64r:
+      case X86::CALL64m:
+        hasIndirectCall = true;
+        HandleIndirectCall(TII, MBB, MI);
+        break;
+      }
+      MBBI = NMBBI;
+    }
+  }
+  return hasIndirectCall;
 }
 
 /* //read metadata and extract constraint. */
 /* bool X86ConstraintCheck::ExtracatConstraint(){ */
 /*   return false; */
 /* } */
+
+bool X86ConstraintCheck::hasIndirectCall(MachineFunction &Fn) {
+  for (auto &MBB : Fn) {
+    if (MBB.empty())
+      continue;
+
+    for (MachineBasicBlock::instr_iterator I = MBB.instr_begin(); I != MBB.instr_end(); I++) {
+      MachineInstr &MI = *I;
+      switch (MI.getOpcode()) {
+      default:
+        break;
+      case X86::JMP16m:
+      case X86::JMP32m:
+      case X86::JMP64m:
+      case X86::CALL16r:
+      case X86::CALL16m:
+      case X86::CALL32r:
+      case X86::CALL32m:
+      case X86::CALL64r:
+      case X86::CALL64m:
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
@@ -282,7 +347,11 @@ bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
   if (Fn.getName().startswith("_boundchecker_"))
     return false;
 
-  ScanMF(Fn);
+  //if there are any indirectCall, then we can not optimization this function 
+  //because it can jump before basicblock
+  bool canOptimizate = !hasIndirectCall(Fn);
+  if(canOptimizate == true)
+    ScanMF(Fn);
   outs() << "lowering check\n";
   LoweringCheck(Fn);
 
@@ -291,29 +360,6 @@ bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
   /* CheckedStoreRegs->reset(); */
 
   return true;
-}
-
-bool X86ConstraintCheck::ConstraintCheck(MachineFunction &Fn) {
-
-  /* outs() << "Basic block of " << Fn.getName() << "\n"; */
-  for (auto &MBB : Fn) {
-    if (MBB.empty())
-      continue;
-    /* for (MachineBasicBlock::iterator MBBI : MBB) { */
-    /*   outs() <<"Intructions: " <<*MBBI<<"\n"; */
-    /*   outs() <<"explicit operands: " ; */
-    /*   for(const MachineOperand &MO: MBBI->explicit_operands()){ */
-    /*     outs() << MO<<"\t\t\t"; */
-    /*   } */
-    /*   outs() << "\n"; */
-    /*   outs() <<"implicit operands: " ; */
-    /*   for(const MachineOperand &MO: MBBI->implicit_operands()){ */
-    /*     outs() << MO<<"\t\t\t"; */
-    /*   } */
-    /*   outs() << "\n"; */
-    /* } */
-  }
-  return false;
 }
 
 bool X86ConstraintCheck::OptMI(MachineInstr *MI, bool isload) {
@@ -376,9 +422,10 @@ bool X86ConstraintCheck::OptMI(MachineInstr *MI, bool isload) {
     // no matter waht, it must in readable region
     CheckedLoadRegs->addReg(BaseReg.getReg());
   } else {
-    outs() <<"BaseReg is noreg or IndexReg is no noreg\n";
+    outs() << "BaseReg is noreg or IndexReg is no noreg\n";
     CheckFuncList[MI] = false;
   }
+  return true;
 }
 
 /* This Function will scan the block instruction by instruction. */
@@ -395,8 +442,6 @@ bool X86ConstraintCheck::OptMI(MachineInstr *MI, bool isload) {
  * check function, then we track the wrong register. */
 /* This will happen when using O0, and might happened at O1-O3. */
 bool X86ConstraintCheck::ScanMBB(MachineBasicBlock *MBB) {
-  /* MachineBasicBlock::instr_iterator I = MBB->instr_begin(); */
-  /* MachineBasicBlock::instr_iterator EI = MBB->instr_end(); */
   for (MachineBasicBlock::iterator I : *MBB) {
     MachineInstr *MI = &*I;
     /* outs() << "Scan instruction: " << *I; */
@@ -519,7 +564,7 @@ bool X86ConstraintCheck::ScanMF(MachineFunction &Fn) {
 
 bool X86ConstraintCheck::LoweringMI(MachineBasicBlock &MBB,
                                     MachineBasicBlock::iterator MBBI) {
-  outs() << "Lowering instruction: " << *MBBI;
+  /* outs() << "Lowering instruction: " << *MBBI; */
   MachineInstr &IMI = *MBBI;
   MachineInstr *MI = &IMI;
   DebugLoc DL = MI->getDebugLoc();
@@ -527,7 +572,7 @@ bool X86ConstraintCheck::LoweringMI(MachineBasicBlock &MBB,
   switch (MI->getOpcode()) {
   case X86::checkstore64m: {
     if (CheckFuncList[MI] == true) {
-      outs() << "Eliminate a CheckStore\n";
+      /* outs() << "Eliminate a CheckStore\n"; */
       MBBI->eraseFromParent();
       return true;
     }
@@ -546,7 +591,7 @@ bool X86ConstraintCheck::LoweringMI(MachineBasicBlock &MBB,
   case X86::checkload64m: {
     // If it is eliminable, erase it and goto next instruction
     if (CheckFuncList[MI] == true) {
-      outs() << "Eliminate a CheckLoad\n";
+      /* outs() << "Eliminate a CheckLoad\n"; */
       MBBI->eraseFromParent();
       return true;
     }
