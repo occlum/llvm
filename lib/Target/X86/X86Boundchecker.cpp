@@ -163,21 +163,21 @@ char X86ConstraintCheck::ID = 0;
 bool X86CFIInstrument::HandleRet(const TargetInstrInfo *TII,
                                  MachineBasicBlock &MBB, MachineInstr &MI) {
   const DebugLoc &DL = MI.getDebugLoc();
-  // popq r10
-  BuildMI(MBB, MI, DL, TII->get(X86::POP64r), X86::R10);
-  // mov r11, 0
-  BuildMI(MBB, MI, DL, TII->get(X86::MOV64ri32)).addReg(X86::R11).addImm(0);
-  // add r10, CFI_LABEL;
-  BuildMI(MBB, MI, DL, TII->get(X86::ADD64rr))
-      .addDef(X86::R10)
-      .addReg(X86::R10)
-      .addReg(X86::R11);
-  /* // bndcu r10 bnd2 */
-  /* // bndcl r10 bnd2 */
+  // popq r11
+  BuildMI(MBB, MI, DL, TII->get(X86::POP64r), X86::R11);
+  // mov (r11), r10
+  BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm)).addReg(X86::R10)
+		.addReg(X86::R11)
+		.addImm(1)
+		.addReg(0)
+		.addImm(0)
+		.addReg(0);
+  // bndcu r10 bnd2
+  // bndcl r10 bnd2
   BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(X86::R10);
   BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(X86::R10);
 
-  BuildMI(MBB, MI, DL, TII->get(X86::JMP64r)).addReg(X86::R10);
+  BuildMI(MBB, MI, DL, TII->get(X86::JMP64r)).addReg(X86::R11);
   // remove ret from code;
   MI.eraseFromParent();
   return true;
