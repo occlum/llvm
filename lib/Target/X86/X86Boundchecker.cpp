@@ -230,7 +230,7 @@ bool X86CFIInstrument::runOnMachineFunction(MachineFunction &Fn) {
     InsertCFILabel(Fn);
 
   //disable if for SPEC
-  RelocatePIC(Fn);
+  /* RelocatePIC(Fn); */
   return true;
 }
 bool X86CFIInstrument::ds2fs(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI, unsigned indexofRIP){
@@ -349,9 +349,9 @@ bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
 
   //if there are any indirectCall, then we can not optimization this function 
   //because it can jump before basicblock
-  bool canOptimizate = !hasIndirectCall(Fn);
-  if(canOptimizate == true)
-    ScanMF(Fn);
+  /* bool canOptimizate = !hasIndirectCall(Fn); */
+  /* if(canOptimizate == true) */
+  /*   ScanMF(Fn); */
   outs() << "lowering check\n";
   LoweringCheck(Fn);
 
