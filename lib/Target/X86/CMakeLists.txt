@@ -66,6 +66,7 @@ set(sources
   X86WinAllocaExpander.cpp
   X86WinEHState.cpp
   X86Boundchecker.cpp
+	X86CFIInstrument.cpp
   )
 
 add_llvm_target(X86CodeGen ${sources})
