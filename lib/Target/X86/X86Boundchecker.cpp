@@ -399,7 +399,7 @@ bool X86ConstraintCheck::LoweringMI(MachineBasicBlock &MBB,
   MachineInstr &IMI = *MBBI;
   MachineInstr *MI = &IMI;
   DebugLoc DL = MI->getDebugLoc();
-#define DISABLE_DATA_SANDBOX
+/* #define DISABLE_DATA_SANDBOX */
 #ifdef DISABLE_DATA_SANDBOX
   switch (MI->getOpcode()) {
   case X86::checkstore64m:
