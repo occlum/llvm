@@ -13,9 +13,11 @@
 using namespace llvm;
 class X86RegValueTracking {
 public:
+
   const X86Subtarget *STI;
   const TargetInstrInfo *TII;
   const TargetRegisterInfo *TRI;
+
   bool computeRange(MachineFunction &Fn);
   void step(MachineInstr *MI, RegsRange &R);
   void InferenceCheck(MachineInstr *MI, RegsRange &Ranges);

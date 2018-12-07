@@ -1,8 +1,8 @@
 #include "X86.h"
 #include "X86InstrBuilder.h"
 #include "X86InstrInfo.h"
-#include "X86Subtarget.h"
 #include "X86RegValueTracking.h"
+#include "X86Subtarget.h"
 
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -16,6 +16,7 @@ using namespace llvm;
 void X86RegValueTracking::init(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
   TRI = STI->getRegisterInfo();
+  Loops = nullptr;
   OutRanges.clear();
   InRanges.clear();
 
@@ -23,7 +24,7 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
     // insert
     if (OutRanges.find(&MBB) == OutRanges.end()) {
       OutRanges.emplace(&MBB, RegsRange(*TRI));
-      LLVM_DEBUG(dbgs() << "scaned MBB " << &MBB <<"\n");
+      LLVM_DEBUG(dbgs() << "scaned MBB " << &MBB << "\n");
     }
     if (InRanges.find(&MBB) == InRanges.end()) {
       InRanges.emplace(&MBB, RegsRange(*TRI));
@@ -33,7 +34,6 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
 
 #define WINDEN_GUARD 20
 bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
-  init(Fn);
 
   unsigned widen = 0;
   bool Changed = true;
@@ -83,15 +83,18 @@ void X86RegValueTracking::transfer(MachineBasicBlock *MBB) {
   /* if(nextMBB != nullptr) */
   /*   InRanges.at(nextMBB).merge(OutRanges.at(MBB)); */
 
-  for(auto &it : MBB->successors()){
+  for (auto &it : MBB->successors()) {
     MachineBasicBlock *nextMBB = &*it;
-    /* LLVM_DEBUG(dbgs() << "merge before, OutRange " << MBB <<OutRanges.at(MBB)); */
-    /* LLVM_DEBUG(dbgs() << "merge before, InRange " << nextMBB << InRanges.at(nextMBB)); */
+    /* LLVM_DEBUG(dbgs() << "merge before, OutRange " << MBB
+     * <<OutRanges.at(MBB)); */
+    /* LLVM_DEBUG(dbgs() << "merge before, InRange " << nextMBB <<
+     * InRanges.at(nextMBB)); */
     InRanges.at(nextMBB).merge(OutRanges.at(MBB));
-    /* LLVM_DEBUG(dbgs() << "merge end, OutRange " << MBB << OutRanges.at(MBB)); */
-    /* LLVM_DEBUG(dbgs() << "merge end, InRange " << nextMBB<<  InRanges.at(nextMBB)); */
+    /* LLVM_DEBUG(dbgs() << "merge end, OutRange " << MBB << OutRanges.at(MBB));
+     */
+    /* LLVM_DEBUG(dbgs() << "merge end, InRange " << nextMBB<<
+     * InRanges.at(nextMBB)); */
   }
-  
 }
 
 void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
@@ -103,59 +106,71 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   } break;
   // register to register
   // TODO  handle more instructions
+  // xor
+  case X86::XOR8rr:
+  case X86::XOR16rr:
+  case X86::XOR32rr:
+  case X86::XOR64rr: {
+    unsigned src = MI->getOperand(0).getReg();
+    unsigned dst = MI->getOperand(1).getReg();
+    if (src == dst) {
+      RangeInfo r1(SmallNum, 0, 0);
+      Ranges.setRegRange(dst, r1);
+    } else{
+      // we don't make complicated arithmetic now
+      RangeInfo r1(Unknown);
+      Ranges.setRegRange(dst, r1);
+    }
+  } break;
   // lea
+  case X86::LEA16r:
+  case X86::LEA32r:
   case X86::LEA64r:
   case X86::LEA64_32r:
     break;
   // add
   case X86::ADD64ri8:
-  // mov
-  case X86::MOV64rr:
-  case X86::MOV32rr: {
-    unsigned src = MI->getOperand(0).getReg();
-    unsigned dst = MI->getOperand(1).getReg();
-    RangeInfo r1 = Ranges.getRegRange(src);
-    Ranges.setRegRange(dst, r1);
-  } break;
-  // memory to register
-  /* case X86::MOV8rm: */
-  /* case X86::MOV8rm_NOREX: */
-  /* case X86::MOV16rm: */
-  /* case X86::MOV32rm: */
-  /* case X86::MOV64rm: */
-  /* case X86::LD_Fp64m: */
-  /* case X86::MOVSSrm: */
-  /* case X86::MOVSDrm: */
-  /* case X86::MOVAPSrm: */
-  /* case X86::MOVUPSrm: */
-  /* case X86::MOVAPDrm: */
-  /* case X86::MOVUPDrm: */
-  /* case X86::MOVDQArm: */
-  /* case X86::MOVDQUrm: { */
-  /*   unsigned dst = MI->getOperand(1).getReg(); */
-  /*   Ranges.setRegRange(dst, RangeInfo::UnknownRange); */
-  /* } break; */
-  /* case X86::MOVSX64rr32: { */
-
-  /* } break; */
-  default:
     break;
-  }
+  default: {
+    if (MI->isMoveReg() && !MI->mayLoad() && !MI->mayStore()) {
+      unsigned src = MI->getOperand(0).getReg();
+      unsigned dst = MI->getOperand(1).getReg();
+      RangeInfo r1 = Ranges.getRegRange(src);
+      Ranges.setRegRange(dst, r1);
+    }
   // memory to register
   // read from memory will earse register's range
   // if mayLoad, then find the def register and set it's range to unknown
-  if (MI->mayLoad()) {
-    for (auto &MO : MI->defs()) {
-      if (MO.isReg()) {
-        auto Reg = MO.getReg();
-        if (X86::GR64RegClass.contains(Reg) ||
-            X86::GR32RegClass.contains(Reg) ||
-            X86::GR16RegClass.contains(Reg) || X86::GR8RegClass.contains(Reg)) {
-          RangeInfo r(Unknown);
-          Ranges.setRegRange(Reg, r);
+    if (MI->mayLoad()) {
+      for (auto &MO : MI->defs()) {
+        if (MO.isReg()) {
+          auto Reg = MO.getReg();
+          if (X86::GR64RegClass.contains(Reg) ||
+              X86::GR32RegClass.contains(Reg) ||
+              X86::GR16RegClass.contains(Reg) ||
+              X86::GR8RegClass.contains(Reg)) {
+            RangeInfo r(Unknown);
+            Ranges.setRegRange(Reg, r);
+          }
         }
       }
     }
+    //unhandled instructions
+    if(!MI->mayLoad() && !MI->mayStore()){
+      for (auto &MO : MI->defs()) {
+        if (MO.isReg()) {
+          auto Reg = MO.getReg();
+          if (X86::GR64RegClass.contains(Reg) ||
+              X86::GR32RegClass.contains(Reg) ||
+              X86::GR16RegClass.contains(Reg) ||
+              X86::GR8RegClass.contains(Reg)) {
+            RangeInfo r(Unknown);
+            Ranges.setRegRange(Reg, r);
+          }
+        }
+      }
+    }
+  } break;
   }
 
   // call instruction
@@ -201,28 +216,32 @@ void X86RegValueTracking::InferenceCheck(MachineInstr *MI, RegsRange &Ranges) {
     RangeInfo r2(getCheckRegion(MI), -AM.Disp, -AM.Disp);
 
     // r2 should be new range, it's not about meet
-    /* LLVM_DEBUG(dbgs() << "Before cutRange: " << TRI->getRegAsmName(AM.Base.Reg)<< " " << r1); */
+    /* LLVM_DEBUG(dbgs() << "Before cutRange: " <<
+     * TRI->getRegAsmName(AM.Base.Reg)<< " " << r1); */
     /* LLVM_DEBUG(dbgs() << "cutRange: " << r2); */
     RangeInfo result = RangeInfo::cutRange(r1, r2);
-    /* LLVM_DEBUG(dbgs() << "After cutRange: " << TRI->getRegAsmName(AM.Base.Reg)<< " " << result); */
+    /* LLVM_DEBUG(dbgs() << "After cutRange: " <<
+     * TRI->getRegAsmName(AM.Base.Reg)<< " " << result); */
     // if meet is Unknown, set it's range to check result;
     Ranges.setRegRange(AM.Base.Reg, result);
   } else {
   }
 }
 
-bool X86RegValueTracking::isInRange(X86AddressMode &AM,RangeInfo R, RegsRange &Ranges){
-  if(AM.BaseType == X86AddressMode::RegBase){
-    if(AM.IndexReg!= 0 || AM.GV!= nullptr){
+bool X86RegValueTracking::isInRange(X86AddressMode &AM, RangeInfo R,
+                                    RegsRange &Ranges) {
+  if (AM.BaseType == X86AddressMode::RegBase) {
+    if (AM.IndexReg != 0 || AM.GV != nullptr) {
       return false;
     }
     RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
     r1.add(AM.Disp);
-    LLVM_DEBUG(dbgs() << "isInRange: " << TRI->getRegAsmName(AM.Base.Reg) <<" " << r1 << "\n");
+    LLVM_DEBUG(dbgs() << "isInRange: " << TRI->getRegAsmName(AM.Base.Reg) << " "
+                      << r1 << "\n");
     // if R contains r1, then meet will return R;
     return r1.isInRange(R);
-  } else{
+  } else {
     return false;
   }
 }
-#undef DEBUG_TYPE 
+#undef DEBUG_TYPE
