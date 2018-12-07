@@ -1,7 +1,6 @@
 #include "X86.h"
 #include "X86InstrBuilder.h"
 #include "X86InstrInfo.h"
-#include "X86RegValueTracking.h"
 #include "X86Subtarget.h"
 
 #include "llvm/ADT/PostOrderIterator.h"
@@ -12,19 +11,40 @@
 
 using namespace llvm;
 #define DEBUG_TYPE "VT"
+class X86RegValueTracking {
+public:
+  const X86Subtarget *STI;
+  const TargetInstrInfo *TII;
+  const TargetRegisterInfo *TRI;
+
+  bool computeRange(MachineFunction &Fn);
+  void step(MachineInstr *MI, RegsRange &R);
+  void InferenceCheck(MachineInstr *MI, RegsRange &Ranges);
+  void transfer(MachineBasicBlock *MBB);
+  std::map<MachineBasicBlock *, RegsRange> OutRanges;
+  std::map<MachineBasicBlock *, RegsRange> InRanges;
+  bool isInRange(X86AddressMode &AM);
+  bool isInRange(X86AddressMode &AM, RangeInfo R, RegsRange &Ranges);
+  void init(MachineFunction &Fn);
+};
 
 void X86RegValueTracking::init(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
   TRI = STI->getRegisterInfo();
-  Loops = nullptr;
   OutRanges.clear();
   InRanges.clear();
+  
 
+  //FIXME 
+  // maybe only Ranges of used MBB requires init
+  // This can save memorys
   for (MachineBasicBlock &MBB : Fn) {
     // insert
     if (OutRanges.find(&MBB) == OutRanges.end()) {
       OutRanges.emplace(&MBB, RegsRange(*TRI));
-      LLVM_DEBUG(dbgs() << "scaned MBB " << &MBB << "\n");
+      /* LLVM_DEBUG(dbgs() << "scaned MBB "); */
+      /* LLVM_DEBUG(MBB.printAsOperand(dbgs(), false)); */
+      /* LLVM_DEBUG(dbgs() << "\n"); */
     }
     if (InRanges.find(&MBB) == InRanges.end()) {
       InRanges.emplace(&MBB, RegsRange(*TRI));
@@ -32,12 +52,13 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
   }
 }
 
-#define WINDEN_GUARD 20
+#define WINDEN_GUARD 10
 bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
 
   unsigned widen = 0;
   bool Changed = true;
 
+        LLVM_DEBUG(dbgs() << "compute Range\n");
   while (Changed) {
     Changed = false;
     widen++;
@@ -48,13 +69,37 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
 
       RegsRange oldout = OutRanges.at(MBB);
 
+      for (auto &it : MBB->predecessors()) {
+        MachineBasicBlock *beforeMBB = &*it;
+        LLVM_DEBUG(dbgs() << "OutRanges of ");
+        LLVM_DEBUG(beforeMBB->printAsOperand(dbgs(), false));
+        LLVM_DEBUG(dbgs() << ": " << OutRanges.at(beforeMBB));
+        InRanges.at(MBB).merge(OutRanges.at(beforeMBB));
+      }
+      LLVM_DEBUG(dbgs() << "InRanges of ");
+      LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
+      LLVM_DEBUG(dbgs() << ": \n" << InRanges.at(MBB));
+
       transfer(MBB);
+
+      LLVM_DEBUG(dbgs() << "after transfer\n");
+      LLVM_DEBUG(dbgs() << "OutRanges of ");
+      LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
+      LLVM_DEBUG(dbgs() << ": \n" << OutRanges.at(MBB));
 
       if (!oldout.equal(OutRanges.at(MBB))) {
         Changed = true;
-        if (widen == WINDEN_GUARD) {
+        LLVM_DEBUG(dbgs() <<"different out ranges of ");
+        LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
+        LLVM_DEBUG(dbgs() <<" :\nold range "<< oldout);
+        LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
+        if (widen > WINDEN_GUARD) {
           OutRanges.at(MBB).setChangedUnknown(oldout);
+          Changed = false;
         }
+        LLVM_DEBUG(dbgs() <<"after set changed unknown");
+        LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
+        LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
       }
     }
   }
@@ -67,37 +112,20 @@ void X86RegValueTracking::transfer(MachineBasicBlock *MBB) {
   for (auto &I : MBB->instrs()) {
     MachineInstr *MI = &I;
     step(MI, Ranges);
-    // if instruction defined eflags, find that is this eflags used by jcc
-    // if so, propagate it's range
-    MachineOperand *DefOp = MI->findRegisterDefOperand(X86::EFLAGS);
-    /* if(MachineOperand *DefOp = MI->findRegsiterDefOperand(X86::EFLAGS,false,
-     * false,nullptr)){ */
-    if (DefOp != nullptr && !DefOp->isDead() && !MI->mayLoad()) {
-      // TODO
-      // guess the range based on jcc
-    }
+    LLVM_DEBUG(dbgs() << Ranges);
   }
   OutRanges.at(MBB) = Ranges;
-
-  /* MachineBasicBlock *nextMBB = MBB->getFallThrough(); */
-  /* if(nextMBB != nullptr) */
-  /*   InRanges.at(nextMBB).merge(OutRanges.at(MBB)); */
-
-  for (auto &it : MBB->successors()) {
-    MachineBasicBlock *nextMBB = &*it;
-    /* LLVM_DEBUG(dbgs() << "merge before, OutRange " << MBB
-     * <<OutRanges.at(MBB)); */
-    /* LLVM_DEBUG(dbgs() << "merge before, InRange " << nextMBB <<
-     * InRanges.at(nextMBB)); */
-    InRanges.at(nextMBB).merge(OutRanges.at(MBB));
-    /* LLVM_DEBUG(dbgs() << "merge end, OutRange " << MBB << OutRanges.at(MBB));
-     */
-    /* LLVM_DEBUG(dbgs() << "merge end, InRange " << nextMBB<<
-     * InRanges.at(nextMBB)); */
-  }
 }
 
 void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
+  LLVM_DEBUG(dbgs() << *MI << "\n");
+      int i = 0;
+      LLVM_DEBUG(dbgs() << "Machine Operands: ");
+      for (const MachineOperand &MO : MI->operands()) {
+        LLVM_DEBUG(dbgs() << " " << i << " : " << MO );
+        i ++;
+      }
+      LLVM_DEBUG(dbgs() << "\n");
   switch (MI->getOpcode()) {
   // check ;
   case X86::checkload64m:
@@ -111,12 +139,12 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   case X86::XOR16rr:
   case X86::XOR32rr:
   case X86::XOR64rr: {
-    unsigned src = MI->getOperand(0).getReg();
-    unsigned dst = MI->getOperand(1).getReg();
+    unsigned dst = MI->getOperand(0).getReg();
+    unsigned src = MI->getOperand(1).getReg();
     if (src == dst) {
       RangeInfo r1(SmallNum, 0, 0);
       Ranges.setRegRange(dst, r1);
-    } else{
+    } else {
       // we don't make complicated arithmetic now
       RangeInfo r1(Unknown);
       Ranges.setRegRange(dst, r1);
@@ -126,11 +154,60 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   case X86::LEA16r:
   case X86::LEA32r:
   case X86::LEA64r:
-  case X86::LEA64_32r:
-    break;
+  case X86::LEA64_32r: {
+    X86AddressMode AM;
+    unsigned dst = MI->getOperand(0).getReg();
+    if(!MI->getOperand(4).isImm()) break;
+    AM = getAddressFromInstr(MI, 1);
+    
+    if (AM.GV != nullptr) {
+      RangeInfo r1(Unknown);
+      Ranges.setRegRange(dst, r1);
+      break;
+    }
+    if (AM.BaseType == X86AddressMode::RegBase) {
+      if (AM.IndexReg == 0) {
+        RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
+        bool cal = r1.add(AM.Disp);
+        if (cal) {
+          Ranges.setRegRange(dst, r1);
+        } else {
+          RangeInfo unknownr = RangeInfo(Unknown);
+          Ranges.setRegRange(dst, unknownr);
+        }
+      }
+    }
+  } break;
   // add
   case X86::ADD64ri8:
-    break;
+  case X86::ADD32ri8:
+  case X86::ADD16ri8:
+  case X86::ADD8ri8: {
+    unsigned dst = MI->getOperand(0).getReg();
+    if(!MI->getOperand(2).isImm()){
+      break;
+    }
+    int imm = MI->getOperand(2).getImm();
+    RangeInfo r1 = Ranges.getRegRange(dst);
+    if (r1.add(imm))
+      Ranges.setRegRange(dst, r1);
+  } break;
+  // movri
+  // X86::MOV64ri movabs
+  case X86::MOV64ri:
+  case X86::MOV64ri32:
+  case X86::MOV32ri:
+  case X86::MOV16ri:
+  case X86::MOV8ri: {
+    unsigned dst = MI->getOperand(0).getReg();
+    if(!MI->getOperand(1).isImm()){
+      break;
+    }
+    int imm = MI->getOperand(1).getImm();
+    RangeInfo r1(SmallNum, imm, imm);
+    Ranges.setRegRange(dst, r1);
+
+  } break;
   default: {
     if (MI->isMoveReg() && !MI->mayLoad() && !MI->mayStore()) {
       unsigned src = MI->getOperand(0).getReg();
@@ -138,9 +215,9 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
       RangeInfo r1 = Ranges.getRegRange(src);
       Ranges.setRegRange(dst, r1);
     }
-  // memory to register
-  // read from memory will earse register's range
-  // if mayLoad, then find the def register and set it's range to unknown
+    // memory to register
+    // read from memory will earse register's range
+    // if mayLoad, then find the def register and set it's range to unknown
     if (MI->mayLoad()) {
       for (auto &MO : MI->defs()) {
         if (MO.isReg()) {
@@ -155,8 +232,8 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
         }
       }
     }
-    //unhandled instructions
-    if(!MI->mayLoad() && !MI->mayStore()){
+    // unhandled instructions
+    if (!MI->mayLoad() && !MI->mayStore()) {
       for (auto &MO : MI->defs()) {
         if (MO.isReg()) {
           auto Reg = MO.getReg();
@@ -208,39 +285,76 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
 void X86RegValueTracking::InferenceCheck(MachineInstr *MI, RegsRange &Ranges) {
   X86AddressMode AM;
   AM = getAddressFromInstr(MI, 0);
+  if (AM.GV != nullptr) {
+    // do not handle GV case now
+    return;
+  }
   if (AM.BaseType == X86AddressMode::RegBase) {
-    if (AM.IndexReg != 0 || AM.GV != nullptr) {
+    if (AM.IndexReg == 0) {
+      RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
+      RangeInfo r2(getCheckRegion(MI), -AM.Disp, -AM.Disp);
+
+      // r2 should be new range, it's not about meet
+      RangeInfo result = RangeInfo::cutRange(r1, r2);
+      // if meet is Unknown, set it's range to check result;
+      Ranges.setRegRange(AM.Base.Reg, result);
+    } else {
+      /* RangeInfo BaseRange = Ranges.getRegRange(AM.Base.Reg); */
+      /* RangeInfo IndexRange = Ranges.getRegRange(AM.IndexReg); */
+      /* // if BaseRange is in one region, then cal the index range as small num */
+      /* if(BaseRange.RangeClass == InRead || BaseRange.RangeClass == InWrite){ */
+      /*   RangeInfo newrange(SmallNum, -(BaseRange.UpRange + AM.Disp)/AM.Scale, -(BaseRange.LowRange + AM.Disp)/AM.Scale); */
+      /*   RangeInfo result = RangeInfo::cutRange(IndexRange, newrange); */
+      /* Ranges.setRegRange(AM.IndexReg, result); */
+      /* return; */
+      /* }else if (IndexRange.RangeClass == SmallNum){ */
+      /*   RangeInfo r2 (getCheckRegion(MI), -IndexRange.UpRange*AM.Scale - AM.Disp, - IndexRange.LowRange *AM.Scale -AM.Disp); */
+      /*   RangeInfo result = RangeInfo::cutRange(BaseRange, r2); */
+      /*   Ranges.setRegRange(AM.Base.Reg, result); */
+      /*   return; */
+      /* } */
       return;
     }
-    RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
-    RangeInfo r2(getCheckRegion(MI), -AM.Disp, -AM.Disp);
-
-    // r2 should be new range, it's not about meet
-    /* LLVM_DEBUG(dbgs() << "Before cutRange: " <<
-     * TRI->getRegAsmName(AM.Base.Reg)<< " " << r1); */
-    /* LLVM_DEBUG(dbgs() << "cutRange: " << r2); */
-    RangeInfo result = RangeInfo::cutRange(r1, r2);
-    /* LLVM_DEBUG(dbgs() << "After cutRange: " <<
-     * TRI->getRegAsmName(AM.Base.Reg)<< " " << result); */
-    // if meet is Unknown, set it's range to check result;
-    Ranges.setRegRange(AM.Base.Reg, result);
   } else {
+    // TODO 
+    // for benign compiler, GV , which is a symbol, must located in the data domain
+    // as a result, we can assume GV is in write region then inference Index reg's range
+    // for example 
+    // checkstore GV(,%rax,4)
+    // which means rax must less then guardzone/4
+    // nothing I can do now
   }
 }
 
 bool X86RegValueTracking::isInRange(X86AddressMode &AM, RangeInfo R,
                                     RegsRange &Ranges) {
+  bool calculable;
   if (AM.BaseType == X86AddressMode::RegBase) {
-    if (AM.IndexReg != 0 || AM.GV != nullptr) {
+    if (AM.GV != nullptr) {
       return false;
     }
     RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
-    r1.add(AM.Disp);
+    if (AM.IndexReg != 0) {
+      // if Index Reg is not noreg, then
+      // Index Reg should be a small number
+      // AM.GV or BaseReg can only exist one
+
+      calculable = r1.add(AM.Disp);
+      RangeInfo indexrange = Ranges.getRegRange(AM.IndexReg);
+      calculable = indexrange.multiple(AM.Scale);
+      calculable = r1.add(indexrange);
+      return calculable ? r1.isInRange(R) : false;
+    }
+
+    calculable = r1.add(AM.Disp);
     LLVM_DEBUG(dbgs() << "isInRange: " << TRI->getRegAsmName(AM.Base.Reg) << " "
                       << r1 << "\n");
     // if R contains r1, then meet will return R;
-    return r1.isInRange(R);
+    return calculable ? r1.isInRange(R) : false;
   } else {
+    // FIXME
+    // currently we assum the GV is in the range
+    // GV + indexreg * scale
     return false;
   }
 }
