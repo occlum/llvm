@@ -14,10 +14,24 @@
 #include "llvm/CodeGen/Passes.h"
 
 using namespace llvm;
+
+namespace llvm{
+  void initializeX86CFIInstrumentPass(PassRegistry&);
+}
+
+#define DEBUG_TYPE "CFIInstrument"
+
+static cl::opt<bool>
+    enableX86CFIInstr("enable-x86-cfiinstr", cl::init(true), cl::Hidden,
+                          cl::desc("Enable X86 cfi instrument."));
+
+namespace {
 class X86CFIInstrument : public MachineFunctionPass {
 public:
   static char ID;
-  X86CFIInstrument() : MachineFunctionPass(ID) {}
+  X86CFIInstrument() : MachineFunctionPass(ID) {
+      initializeX86CFIInstrumentPass(*PassRegistry::getPassRegistry());
+  }
 
   bool runOnMachineFunction(MachineFunction &Fn) override;
 
@@ -36,6 +50,7 @@ public:
 
   bool CFIInstrument(MachineFunction &Fn);
 };
+}
 char X86CFIInstrument::ID = 0;
 
 bool X86CFIInstrument::HandleRet(MachineBasicBlock &MBB, MachineInstr &MI) {
@@ -65,7 +80,7 @@ bool X86CFIInstrument::HandleRet(MachineBasicBlock &MBB, MachineInstr &MI) {
 bool X86CFIInstrument::HandleIndirectBr(MachineBasicBlock &MBB,
                                         MachineInstr &MI) {
   /* const DebugLoc &DL = MI.getDebugLoc(); */
-  /* outs() << "HandleIndirectBr\n"; */
+  /* LLVM_DEBUG(dbgs() << "HandleIndirectBr\n"); */
   /* MachineInstr *LEA = BuildMI(MBB, MI, DL, TII->get(X86::LEA64r), X86::R10); */
    
   /* for (auto &MO : MI->operands()) { */
@@ -80,29 +95,24 @@ bool X86CFIInstrument::HandleIndirectBr(MachineBasicBlock &MBB,
 bool X86CFIInstrument::HandleIndirectMemCall(MachineBasicBlock &MBB,
                                              MachineInstr &MI) {
   const DebugLoc &DL = MI.getDebugLoc();
-  outs() << "HandleIndirectMemCall " << MI << "\n";
-  // movq (x),%r10
-  MachineInstr *loadtarget = BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), X86::R10);
+  LLVM_DEBUG(dbgs() << "HandleIndirectMemCall " << MI << "\n");
+  // movq (x),%r11
+  MachineInstr *loadtarget = BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), X86::R11);
   for (auto &MO : MI.operands()) {
     loadtarget->addOperand(MO);
   }
-  // bndcl (r10), bnd2
+  LLVM_DEBUG(dbgs() << "loadtarget " << *loadtarget<< "\n");
+  // movq (%r11) , %r10
+  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), X86::R10),X86::R11);
+  // bndcl (%r10), %bnd2
   // directly check because code section must be readonly
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rm), X86::BND2)
-      .addReg(X86::R10)
-      .addImm(1)
-      .addReg(0)
-      .addImm(0)
-      .addReg(0);
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rm), X86::BND2)
-      .addReg(X86::R10)
-      .addImm(1)
-      .addReg(0)
-      .addImm(0)
-      .addReg(0);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2)
+      .addReg(X86::R10);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2)
+      .addReg(X86::R10);
 
   // call *r10
-  BuildMI(MBB, MI, DL, TII->get(X86::CALL64r), X86::R10);
+  BuildMI(MBB, MI, DL, TII->get(X86::CALL64r), X86::R11);
   MI.eraseFromParent();
   return true;
 }
@@ -111,20 +121,16 @@ bool X86CFIInstrument::HandleIndirectRegCall(MachineBasicBlock &MBB,
                                              MachineInstr &MI) {
   const DebugLoc &DL = MI.getDebugLoc();
   MachineOperand &MO = MI.getOperand(0);
-  // bndcu (MO), bnd2
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rm), X86::BND2)
-      .add(MO)
-      .addImm(1)
-      .addReg(0)
-      .addImm(0)
-      .addReg(0);
-	//bndcl (MO), bnd2
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rm),	X86::BND2)
-      .add(MO)
-      .addImm(1)
-      .addReg(0)
-      .addImm(0)
-      .addReg(0);
+  LLVM_DEBUG(dbgs() << "HandleIndirectRegCall " << MI << "\n");
+  unsigned labelReg = MO.getReg() == X86::R10 ? X86::R11: X86::R10;
+  // mov (MO), %r10
+  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), labelReg),MO.getReg());
+  // bndcu (%r10), bnd2
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2)
+      .addReg(labelReg);
+	//bndcl (%r10), bnd2
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr),	X86::BND2)
+      .addReg(labelReg);
   return true;
 }
 
@@ -139,7 +145,7 @@ bool X86CFIInstrument::InsertCFILabel(MachineFunction &Fn,
     auto NMBBI = std::next(FirstMBBI);
 		if(FirstMBBI== Fn.end()){
 			//can't find non-empty BB, exist function
-			outs() <<"Error: no non-empty basic block at function " << Fn.getName();
+			LLVM_DEBUG(dbgs() <<"Error: no non-empty basic block at function " << Fn.getName());
 			return false;
 		}
 		FirstMBBI = NMBBI;
@@ -148,7 +154,7 @@ bool X86CFIInstrument::InsertCFILabel(MachineFunction &Fn,
   // insert CFI_LABEL before first instruction at the function
 	auto &FirstMBB = *FirstMBBI;
 	auto &FirstMI = *FirstMBB.getFirstNonPHI();
-	/* outs() <<"First MI : " << FirstMI; */
+	/* LLVM_DEBUG(dbgs() <<"First MI : " << FirstMI); */
   const DebugLoc &FirstDL = FirstMI.getDebugLoc();
   BuildMI(FirstMBB, FirstMI, FirstDL, TII->get(X86::NOOPL))
         .addReg(X86::RAX)
@@ -219,6 +225,9 @@ bool X86CFIInstrument::runOnMachineFunction(MachineFunction &Fn) {
 
   if (Fn.getName().startswith("_boundchecker_"))
     return false;
+  if(!enableX86CFIInstr) {
+    return false;
+  }
 
   bool hasIndirectJump = false;
   hasIndirectJump = CFIInstrument(Fn);
@@ -235,7 +244,7 @@ bool X86CFIInstrument::runOnMachineFunction(MachineFunction &Fn) {
   /*   for (MachineBasicBlock::instr_iterator I = MBB.instr_begin(); */
   /*        I != MBB.instr_end(); I++) { */
   /*     MachineInstr &MI = *I; */
-			/* outs()<< "Machine Instr at end: << " << MI << "\n"; */
+			/* LLVM_DEBUG(dbgs() << "Machine Instr at end: << " << MI << "\n"); */
 		/* } */
 	/* } */
   return true;
@@ -322,5 +331,10 @@ bool X86CFIInstrument::CFIInstrument(MachineFunction &Fn) {
   }
   return hasIndirectJump;
 }
+#undef DEBUG_TYPE
+
+INITIALIZE_PASS(X86CFIInstrument, "cfi-instrument", "CFI Instrument",
+    false, false)
 
 FunctionPass *llvm::createX86CFIInstrument() { return new X86CFIInstrument(); }
+
