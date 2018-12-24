@@ -24,6 +24,9 @@ namespace llvm{
 static cl::opt<bool>
     enableX86CFIInstr("enable-x86-cfiinstr", cl::init(true), cl::Hidden,
                           cl::desc("Enable X86 cfi instrument."));
+static cl::opt<bool>
+    enableX86FSRelocate("enable-x86-fs-relocate", cl::init(false), cl::Hidden,
+                          cl::desc("Enable X86 relocate with FS."));
 
 namespace {
 class X86CFIInstrument : public MachineFunctionPass {
@@ -235,7 +238,8 @@ bool X86CFIInstrument::runOnMachineFunction(MachineFunction &Fn) {
   InsertCFILabel(Fn, hasIndirectJump);
 
   // disable if for SPEC
-  /* RelocatePIC(Fn); */
+  if(enableX86FSRelocate)
+    RelocatePIC(Fn);
 
   /* for (auto &MBB : Fn) { */
   /*   if (MBB.empty()) */
