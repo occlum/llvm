@@ -36,13 +36,13 @@ These optionals are used for control the behavior of toolchain. Here is a list a
 
 option | default value | description  
 ----------------| ------------|---------------
-check-store-only |  false  | set this to true will insert guard before memory writes only  
+check-store-only |  true| set this to true will insert guard before memory writes only  
 disable-SFI   |   false  |   set this to true will not insert any memory guards  
 enable-x86-boundchecker| true | set this to false will not translate memory guards instruction. I.e. all memory guard is eliminated  
 enable-x86-boundchecker-opt | true| set this to false will disable all optimizations on memory guards except GOT optimization  
 enable-x86-boundchecker-loop-opt | true | set this to false will disable loop optimizations on memory guards  
 enable-x86-cfiinstr | true | set this to false will disable all CFI instrument in binary  
-enable-x86-fs-relocate | false | set this to true will insert FS relocate code.  
+enable-x86-fs-relocate | true| set this to true will insert FS relocate code.  
  
 For more details about usage, please refer to toolchain-benchmark: [toolchain-benchmark](https://github.com/occlum/toolchain-benchmark)
 
