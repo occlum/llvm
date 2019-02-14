@@ -244,7 +244,6 @@ public:
     return true;
   }
 
-  //
   void setAllUnknown() {
     for (auto &RegIt : Ranges) {
       if (RegIt.second.RangeClass != Undef)
@@ -255,10 +254,12 @@ public:
   // compare this with R, if any difference, set to unknown
   // set Changed Unknown should always
   void setChangedUnknown(RegsRange &R) {
+    LLVM_DEBUG(dbgs() << "setChangedUnknown\t");
     for (auto &RegIt : Ranges) {
       // do not be undef, so avoid register alias
       if (RegIt.second.RangeClass != Undef) {
         if (!RegIt.second.equal(R.Ranges[RegIt.first])) {
+          LLVM_DEBUG(dbgs() << TRI->getRegAsmName(RegIt.first) << "\t");
           RangeInfo r(Unknown);
           // use setRegRange so if R use different register, the programe won't
           // set two overlaped register
@@ -266,19 +267,27 @@ public:
         }
       }
     }
+    LLVM_DEBUG(dbgs() << "\n");
   }
 
   // get a reg range of Reg.
   RangeInfo getRegRange(unsigned Reg) {
+      LLVM_DEBUG(dbgs() << "getRegRange \t");
     for (MCSubRegIterator SubRegs(Reg, TRI, true); SubRegs.isValid(); ++SubRegs)
-      if (Ranges[*SubRegs].RangeClass != Undef)
+      if (Ranges[*SubRegs].RangeClass != Undef){
+      LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SubRegs) << "\t");
+      LLVM_DEBUG(dbgs() << Ranges[*SubRegs] << "\t");
         return Ranges[*SubRegs];
+      }
     // if any of the super register has a range, then set it's range to
     // unknown
     for (MCSuperRegIterator SuperRegs(Reg, TRI, false); SuperRegs.isValid();
-         ++SuperRegs)
+         ++SuperRegs){
+      LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SuperRegs) << "\t");
+      LLVM_DEBUG(dbgs() << Ranges[*SuperRegs] << "\t");
       if (Ranges[*SuperRegs].RangeClass != Undef)
         return RangeInfo(Unknown);
+    }
     // else return Undef
     return Ranges[Reg];
   }
@@ -287,22 +296,22 @@ public:
   // When the register is new defined, set it's range as fresh
   // Like Move m, Reg
   void setRegRange(unsigned Reg, RangeInfo &Range) {
-    /* LLVM_DEBUG(dbgs() << "setRegRange: \n"); */
+    LLVM_DEBUG(dbgs() << "setRegRange: \n");
     for (MCSubRegIterator SubRegs(Reg, TRI, false); SubRegs.isValid();
          ++SubRegs) {
-      /* LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SubRegs) << "\t"); */
+      LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SubRegs) << "\t");
       Ranges[*SubRegs] = RangeInfo(Undef);
-      /* LLVM_DEBUG(dbgs() << Ranges[*SubRegs] << "\t"); */
+      LLVM_DEBUG(dbgs() << Ranges[*SubRegs] << "\t");
     }
     for (MCSuperRegIterator SuperRegs(Reg, TRI, false); SuperRegs.isValid();
          ++SuperRegs) {
-      /* LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SuperRegs) << "\t"); */
+      LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SuperRegs) << "\t");
       Ranges[*SuperRegs] = RangeInfo(Undef);
-      /* LLVM_DEBUG(dbgs() << Ranges[*SuperRegs] << "\t"); */
+      LLVM_DEBUG(dbgs() << Ranges[*SuperRegs] << "\t");
     }
-    /* LLVM_DEBUG(dbgs() << TRI->getRegAsmName(Reg) << "\n"); */
+    LLVM_DEBUG(dbgs() << TRI->getRegAsmName(Reg) << "\n");
     Ranges[Reg] = Range;
-    /* LLVM_DEBUG(dbgs() << Ranges[Reg] << "\t"); */
+    LLVM_DEBUG(dbgs() << Ranges[Reg] << "\t");
   }
 
   // merge r into this regsrange

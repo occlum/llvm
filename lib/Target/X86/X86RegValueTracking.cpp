@@ -33,7 +33,7 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
   TRI = STI->getRegisterInfo();
   OutRanges.clear();
   InRanges.clear();
-  
+  RangeInfo writeable(InWrite,0,0 );
 
   //FIXME 
   // maybe only Ranges of used MBB requires init
@@ -48,6 +48,7 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
     }
     if (InRanges.find(&MBB) == InRanges.end()) {
       InRanges.emplace(&MBB, RegsRange(*TRI));
+      InRanges.at(&MBB).setRegRange(X86::RSP, writeable);
     }
   }
 }
@@ -61,6 +62,7 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
         LLVM_DEBUG(dbgs() << "compute Range\n");
   while (Changed) {
     Changed = false;
+    LLVM_DEBUG(dbgs() <<"scaned one time\n");
     widen++;
 
     ReversePostOrderTraversal<MachineFunction *> RPOT(&Fn);
@@ -93,16 +95,16 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
         LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
         LLVM_DEBUG(dbgs() <<" :\nold range "<< oldout);
         LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
-        if (widen > WINDEN_GUARD) {
+        if (widen == WINDEN_GUARD) {
           OutRanges.at(MBB).setChangedUnknown(oldout);
-          Changed = false;
+          LLVM_DEBUG(dbgs() <<"after set changed unknown");
+          LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
+          LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
         }
-        LLVM_DEBUG(dbgs() <<"after set changed unknown");
-        LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-        LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
       }
     }
   }
+  LLVM_DEBUG(dbgs() <<"finished compute Range\n");
 }
 #undef WINDEN_GUARD
 
@@ -110,9 +112,10 @@ void X86RegValueTracking::transfer(MachineBasicBlock *MBB) {
   // get InRanges copy
   RegsRange Ranges = InRanges.at(MBB);
   for (auto &I : MBB->instrs()) {
+    LLVM_DEBUG(dbgs() << "Before step: "<< Ranges);
     MachineInstr *MI = &I;
     step(MI, Ranges);
-    LLVM_DEBUG(dbgs() << Ranges);
+    LLVM_DEBUG(dbgs() << "After step: " << Ranges);
   }
   OutRanges.at(MBB) = Ranges;
 }
@@ -206,26 +209,27 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
     int imm = MI->getOperand(1).getImm();
     RangeInfo r1(SmallNum, imm, imm);
     Ranges.setRegRange(dst, r1);
-
   } break;
   default: {
     if (MI->isMoveReg() && !MI->mayLoad() && !MI->mayStore()) {
-      unsigned src = MI->getOperand(0).getReg();
-      unsigned dst = MI->getOperand(1).getReg();
+      unsigned dst = MI->getOperand(0).getReg();
+      unsigned src = MI->getOperand(1).getReg();
       RangeInfo r1 = Ranges.getRegRange(src);
+      LLVM_DEBUG(dbgs() <<"isMoveReg get Range: " << r1 << "\n");
       Ranges.setRegRange(dst, r1);
     }
     // memory to register
     // read from memory will earse register's range
     // if mayLoad, then find the def register and set it's range to unknown
-    if (MI->mayLoad()) {
+    else if (MI->mayLoad()) {
       for (auto &MO : MI->defs()) {
         if (MO.isReg()) {
           auto Reg = MO.getReg();
           if (X86::GR64RegClass.contains(Reg) ||
               X86::GR32RegClass.contains(Reg) ||
               X86::GR16RegClass.contains(Reg) ||
-              X86::GR8RegClass.contains(Reg)) {
+              X86::GR8RegClass.contains(Reg)||
+              Reg == X86::RSP) {
             RangeInfo r(Unknown);
             Ranges.setRegRange(Reg, r);
           }
@@ -233,7 +237,7 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
       }
     }
     // unhandled instructions
-    if (!MI->mayLoad() && !MI->mayStore()) {
+    else if (!MI->mayLoad() && !MI->mayStore()) {
       for (auto &MO : MI->defs()) {
         if (MO.isReg()) {
           auto Reg = MO.getReg();
@@ -252,8 +256,11 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
 
   // call instruction
   // set all range to unknown;
+  // actual should be CFI_LABEL
   if (MI->isCall()) {
     Ranges.setAllUnknown();
+    RangeInfo writeable(InWrite,0,0 );
+    Ranges.setRegRange(X86::RSP, writeable);
   }
 }
 
@@ -291,6 +298,8 @@ void X86RegValueTracking::InferenceCheck(MachineInstr *MI, RegsRange &Ranges) {
   }
   if (AM.BaseType == X86AddressMode::RegBase) {
     if (AM.IndexReg == 0) {
+      //FIXME
+      //This check function might be eliminable in the future, which means the range we infered here is not reliable
       RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
       RangeInfo r2(getCheckRegion(MI), -AM.Disp, -AM.Disp);
 

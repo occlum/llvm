@@ -62,12 +62,12 @@ public:
   bool runOnMachineFunction(MachineFunction &Fn) override;
   bool OptimizeCheck(MachineFunction &Fn, bool canOpt);
   bool OptimizeLoop(MachineFunction &Fn);
-  bool isRSPchecked(MachineFunction &Fn);
   bool OptimizeMBB(MachineBasicBlock &MBB, X86RegValueTracking &RT);
   bool LoweringMI(MachineFunction &Fn);
   void getAnalysisUsage(AnalysisUsage &AU) const override;
   bool isLoopBody(MachineBasicBlock *MBB, MachineLoop *L);
 
+  bool checkRSP(MachineFunction &Fn);
   bool computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
                    X86RegValueTracking &UpLevelRT);
   bool hoist(MachineLoop *ML, MachineLoopInfo *MLI, X86RegValueTracking &RT);
@@ -117,6 +117,34 @@ bool X86ConstraintCheck::hasIndirectCall(MachineFunction &Fn) {
   return false;
 }
 
+// if changed RSP ,should check RSP after that instructions
+bool X86ConstraintCheck::checkRSP(MachineFunction &Fn){
+  bool ret = false;
+  for (auto &MBB : Fn) {
+    if (MBB.empty())
+      continue;
+    MachineBasicBlock::iterator MBBI = MBB.begin(), E = MBB.end();
+
+    while (MBBI != E) {
+      MachineInstr *MI = &*MBBI;
+      DebugLoc DL = MI->getDebugLoc();
+      MachineBasicBlock::iterator NMBBI = std::next(MBBI);
+
+      for(auto &MO : MI->defs()){
+        if(MO.isReg() && MO.getReg() == X86::RSP){
+          auto &NewMI = addDirectMem(BuildMI(MBB, MBBI, DL, TII->get(X86::checkstore64m)), X86::RSP);
+          MBB.remove(NewMI);
+          MBB.insertAfter(MBBI, NewMI);
+          LLVM_DEBUG(dbgs() <<"Insert a check of RSP\n"<<*MI <<"\n");
+          ret = true;
+        }
+      }
+      MBBI = NMBBI;
+    }
+  }
+  return ret;
+}
+
 bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
   TII = STI->getInstrInfo();
@@ -131,6 +159,7 @@ bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
 
   // compute for LoopHoist
   if (canOptimize && enableX86OptBoundchecker) {
+    checkRSP(Fn);
     RT.init(Fn);
     RT.computeRange(Fn);
   }
@@ -204,30 +233,6 @@ bool X86ConstraintCheck::OptimizeMBB(MachineBasicBlock &MBB,
   }
 }
 
-bool X86ConstraintCheck::isRSPchecked(MachineFunction &Fn) {
-  for (MachineBasicBlock &MBB : Fn) {
-    if (MBB.empty())
-      continue;
-    for (MachineBasicBlock::instr_iterator I = MBB.instr_begin();
-         I != MBB.instr_end(); I++) {
-      MachineInstr *MI = &*I;
-      switch (MI->getOpcode()) {
-      case X86::checkload64m:
-      case X86::checkstore64m: {
-        X86AddressMode AM = getAddressFromInstr(MI, 0);
-        // if any check rsp found, should check rsp
-        if (AM.BaseType == X86AddressMode::RegBase) {
-          if(AM.Base.Reg == X86::RSP)
-            return true;
-        }
-      }
-    }
-      /* if(MI->isMoveReg() */
-    }
-  }
-  return false;
-}
-
 // OptimizeCheck will store every eliminable MI in EliminableList
 bool X86ConstraintCheck::OptimizeCheck(MachineFunction &Fn, bool canOpt) {
   LLVM_DEBUG(dbgs() << "Global Optimizing\n");
@@ -236,10 +241,6 @@ bool X86ConstraintCheck::OptimizeCheck(MachineFunction &Fn, bool canOpt) {
   DebugLoc DL;
   if(MBBI != MBB.end())
     DL = MBBI->getDebugLoc();
-
-  // insert check rsp at the beginning of Function
-  if(isRSPchecked(Fn))
-    addDirectMem(BuildMI(MBB, MBBI, DL, TII->get(X86::checkstore64m)), X86::RSP);
 
   for (MachineBasicBlock &MBB : Fn) {
     if (MBB.empty())
@@ -360,7 +361,7 @@ bool X86ConstraintCheck::hoist(MachineLoop *ML, MachineLoopInfo *MLI, X86RegValu
   LLVM_DEBUG(dbgs() << "Loop Hoist Register: ");
   for(unsigned reg :hoistreg){
     LLVM_DEBUG(dbgs() << TRI->getRegAsmName(reg)<< "\t");
-    auto & i = addDirectMem(BuildMI(preheader, MBBI, DL, TII->get(X86::checkstore64m)),reg);
+    addDirectMem(BuildMI(preheader, MBBI, DL, TII->get(X86::checkstore64m)),reg);
   }
   LLVM_DEBUG(dbgs() <<"\n");
 
@@ -508,10 +509,11 @@ bool X86ConstraintCheck::LoweringMI(MachineFunction &Fn) {
     MachineBasicBlock::iterator MBBI = MBB.begin(), E = MBB.end();
 
     while (MBBI != E) {
-      MachineBasicBlock::iterator NMBBI = std::next(MBBI);
       MachineInstr *MI = &*MBBI;
       DebugLoc DL = MI->getDebugLoc();
       MachineInstr *Upcheck, *Lowcheck;
+
+      MachineBasicBlock::iterator NMBBI = std::next(MBBI);
 
       switch (MI->getOpcode()) {
       case X86::checkstore64m:
