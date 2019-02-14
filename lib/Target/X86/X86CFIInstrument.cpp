@@ -25,7 +25,7 @@ static cl::opt<bool> enableX86CFIInstr("enable-x86-cfiinstr", cl::init(true),
                                        cl::Hidden,
                                        cl::desc("Enable X86 cfi instrument."));
 static cl::opt<bool>
-    enableX86FSRelocate("enable-x86-fs-relocate", cl::init(true), cl::Hidden,
+    enableX86FSRelocate("enable-x86-fs-relocate", cl::init(false), cl::Hidden,
                         cl::desc("Enable X86 relocate with FS."));
 
 namespace {
