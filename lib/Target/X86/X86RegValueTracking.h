@@ -13,7 +13,6 @@
 using namespace llvm;
 class X86RegValueTracking {
 public:
-
   const X86Subtarget *STI;
   const TargetInstrInfo *TII;
   const TargetRegisterInfo *TRI;
@@ -25,7 +24,7 @@ public:
   std::map<MachineBasicBlock *, RegsRange> OutRanges;
   std::map<MachineBasicBlock *, RegsRange> InRanges;
   bool isInRange(X86AddressMode &AM);
-  bool isInRange(X86AddressMode &AM,RangeInfo R, RegsRange &Ranges);
+  bool isInRange(X86AddressMode &AM, RangeInfo R, RegsRange &Ranges);
   void init(MachineFunction &Fn);
 };
 

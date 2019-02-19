@@ -121,11 +121,11 @@ FunctionPass *createX86EvexToVexInsts();
 /// This pass creates the thunks for the retpoline feature.
 FunctionPass *createX86RetpolineThunksPass();
 
-/// This pass will check the constraint and erase check if vaild
-FunctionPass *createX86ConstraintCheck();
+/// This pass for MDSFI Data guards. 
+FunctionPass *createX86MDSFIDataGuards();
 
-/// This pass for CFIInstrument at backend
-FunctionPass *createX86CFIInstrument();
+/// This pass for MDSFI Control Guards at backend
+FunctionPass *createX86MDSFIControlGuard();
 
 InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
                                                   X86Subtarget &,

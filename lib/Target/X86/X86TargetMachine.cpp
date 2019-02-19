@@ -69,6 +69,7 @@ void initializeX86ExecutionDomainFixPass(PassRegistry &);
 void initializeX86DomainReassignmentPass(PassRegistry &);
 void initializeX86AvoidSFBPassPass(PassRegistry &);
 void initializeX86FlagsCopyLoweringPassPass(PassRegistry &);
+void initializeX86MDSFIControlGuardPass(PassRegistry &);
 
 } // end namespace llvm
 
@@ -90,6 +91,7 @@ extern "C" void LLVMInitializeX86Target() {
   initializeX86DomainReassignmentPass(PR);
   initializeX86AvoidSFBPassPass(PR);
   initializeX86FlagsCopyLoweringPassPass(PR);
+  initializeX86MDSFIControlGuardPass(PR);
 }
 
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
@@ -489,7 +491,6 @@ void X86PassConfig::addPostRegAlloc() {
 }
 
 void X86PassConfig::addPreSched2() { 
-  addPass(createX86ConstraintCheck()); 
   addPass(createX86ExpandPseudoPass()); 
 }
 
@@ -521,5 +522,6 @@ void X86PassConfig::addPreEmitPass2() {
   const Triple &TT = TM->getTargetTriple();
   if (!TT.isOSDarwin() && !TT.isOSWindows())
     addPass(createCFIInstrInserter());
-  addPass(createX86CFIInstrument());
+  addPass(createX86MDSFIControlGuard());
+  addPass(createX86MDSFIDataGuard()); 
 }

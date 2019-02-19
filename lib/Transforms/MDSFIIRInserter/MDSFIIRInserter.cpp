@@ -29,10 +29,10 @@ static cl::opt<bool> CheckStoreOnly("check-store-only", cl::init(true),
 static cl::opt<bool>
     NoSFI("disable-SFI", cl::desc("do not check memory operation"), cl::Hidden);
 
-struct BoundCheckerPass : public ModulePass {
+struct MDSFIIRInserterPass : public ModulePass {
 public:
   static char ID;
-  BoundCheckerPass() : ModulePass(ID) {}
+  MDSFIIRInserterPass() : ModulePass(ID) {}
   virtual bool runOnModule(Module &M);
 
 private:
@@ -45,7 +45,7 @@ private:
   std::set<Value *> StorePtrSet;
 };
 
-void BoundCheckerPass::insertCheck(Value *ptr, Instruction *I, bool isload) {
+void MDSFIIRInserterPass::insertCheck(Value *ptr, Instruction *I, bool isload) {
   if (NoSFI) {
     return;
   }
@@ -75,7 +75,7 @@ void BoundCheckerPass::insertCheck(Value *ptr, Instruction *I, bool isload) {
   return;
 }
 
-void BoundCheckerPass::handleIndirectBrInst(IndirectBrInst *IBI) {
+void MDSFIIRInserterPass::handleIndirectBrInst(IndirectBrInst *IBI) {
   // TODO && FIXME
   // handle it at IR level means we can avoid unnecessary jump table at backend
   Value *dstAddress = IBI->getAddress();
@@ -93,13 +93,13 @@ void BoundCheckerPass::handleIndirectBrInst(IndirectBrInst *IBI) {
   return;
 }
 
-void BoundCheckerPass::handleTermInst(Instruction *I) {
+void MDSFIIRInserterPass::handleTermInst(Instruction *I) {
   if (IndirectBrInst *IBI = dyn_cast<IndirectBrInst>(I)) {
     handleIndirectBrInst(IBI);
   }
 }
 
-void BoundCheckerPass::handleInst(Instruction *I) {
+void MDSFIIRInserterPass::handleInst(Instruction *I) {
   if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     insertCheck(LI->getOperand(0), LI, true);
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
@@ -116,7 +116,7 @@ void BoundCheckerPass::handleInst(Instruction *I) {
 }
 
 // This function scan a pointer to see if it's in writable region
-bool BoundCheckerPass::ScanStorePtr(Value *V) {
+bool MDSFIIRInserterPass::ScanStorePtr(Value *V) {
   for (User *u : V->users()) {
     if (dyn_cast<StoreInst>(u)) {
       StorePtrSet.insert(V);
@@ -131,8 +131,8 @@ bool BoundCheckerPass::ScanStorePtr(Value *V) {
   return false;
 }
 
-bool BoundCheckerPass::runOnModule(Module &M) {
-  errs() << "BoundChecker running...\n";
+bool MDSFIIRInserterPass::runOnModule(Module &M) {
+  errs() << "MDSFIIRInserter running...\n";
 
   curModule = &M;
 
@@ -164,26 +164,28 @@ bool BoundCheckerPass::runOnModule(Module &M) {
 
     StorePtrSet.clear();
   }
-  errs() << "BoundChecker finished...\n";
+  errs() << "MDSFIIRInserter finished...\n";
   return true;
 }
 
-char BoundCheckerPass::ID = 0;
-static RegisterPass<BoundCheckerPass> X("boundchecker", "BoundChecker pass",
-                                        false, false);
+char MDSFIIRInserterPass::ID = 0;
+static RegisterPass<MDSFIIRInserterPass>
+    X("MDSFIIRInserter", "MDSFIIRInserter pass", false, false);
 
 // This function is of type PassManagerBuilder::ExtensionFn
 static void loadPass(const PassManagerBuilder &Builder,
                      legacy::PassManagerBase &PM) {
-  PM.add(new BoundCheckerPass());
+  PM.add(new MDSFIIRInserterPass());
 }
 // These constructors add our pass to a list of global extensions.
 // static RegisterStandardPasses
-// boundcheckerLoader_Ox(PassManagerBuilder::EP_EarlyAsPossible, loadPass);
+// MDSFIIRInserterLoader_Ox(PassManagerBuilder::EP_EarlyAsPossible, loadPass);
 /* static RegisterStandardPasses
- * boundcheckerLoader_Ox(PassManagerBuilder::EP_ModuleOptimizerEarly, loadPass);
+ * MDSFIIRInserterLoader_Ox(PassManagerBuilder::EP_ModuleOptimizerEarly,
+ * loadPass);
  */
 static RegisterStandardPasses
-    boundcheckerLoader_Ox(PassManagerBuilder::EP_OptimizerLast, loadPass);
+    MDSFIIRInserterLoader_Ox(PassManagerBuilder::EP_OptimizerLast, loadPass);
 static RegisterStandardPasses
-    boundcheckerLoader_O0(PassManagerBuilder::EP_EnabledOnOptLevel0, loadPass);
+    MDSFIIRInserterLoader_O0(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                             loadPass);

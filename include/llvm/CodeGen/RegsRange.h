@@ -124,19 +124,19 @@ public:
   }
 
   // Lattic meet operation
-  //			---------
-  // 			| Undef |
-  // 			---------
+  //      ---------
+  //      | Undef |
+  //      ---------
   // ---------
   // |InWrite|
   // ---------  ----------
   // |InRead |  |SmallNum|
   // ---------  ----------
-  //	    ---------
+  //      ---------
   //      |Unknown|
-  //	    ---------
+  //      ---------
   //
-  //	meet will extend it's range
+  //  meet will extend it's range
   static RangeInfo meet(RangeInfo &A, RangeInfo &B) {
     if (A.RangeClass == Undef) {
       return B;
@@ -272,17 +272,17 @@ public:
 
   // get a reg range of Reg.
   RangeInfo getRegRange(unsigned Reg) {
-      LLVM_DEBUG(dbgs() << "getRegRange \t");
+    LLVM_DEBUG(dbgs() << "getRegRange \t");
     for (MCSubRegIterator SubRegs(Reg, TRI, true); SubRegs.isValid(); ++SubRegs)
-      if (Ranges[*SubRegs].RangeClass != Undef){
-      LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SubRegs) << "\t");
-      LLVM_DEBUG(dbgs() << Ranges[*SubRegs] << "\t");
+      if (Ranges[*SubRegs].RangeClass != Undef) {
+        LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SubRegs) << "\t");
+        LLVM_DEBUG(dbgs() << Ranges[*SubRegs] << "\t");
         return Ranges[*SubRegs];
       }
     // if any of the super register has a range, then set it's range to
     // unknown
     for (MCSuperRegIterator SuperRegs(Reg, TRI, false); SuperRegs.isValid();
-         ++SuperRegs){
+         ++SuperRegs) {
       LLVM_DEBUG(dbgs() << TRI->getRegAsmName(*SuperRegs) << "\t");
       LLVM_DEBUG(dbgs() << Ranges[*SuperRegs] << "\t");
       if (Ranges[*SuperRegs].RangeClass != Undef)

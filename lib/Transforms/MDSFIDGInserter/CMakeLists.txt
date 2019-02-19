@@ -10,9 +10,8 @@
 #   set(LLVM_LINK_COMPONENTS Core Support)
 # endif()
 
-add_llvm_loadable_module( LLVMBoundchecker
-# add_llvm_library(LLVMBoundchecker
-	BoundChecker.cpp
+add_llvm_loadable_module( LLVMMDSFIIRInserter
+  MDSFIIRInserter.cpp
 
   DEPENDS
   intrinsics_gen

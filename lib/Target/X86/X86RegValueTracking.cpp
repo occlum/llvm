@@ -33,9 +33,9 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
   TRI = STI->getRegisterInfo();
   OutRanges.clear();
   InRanges.clear();
-  RangeInfo writeable(InWrite,0,0 );
+  RangeInfo writeable(InWrite, 0, 0);
 
-  //FIXME 
+  // FIXME
   // maybe only Ranges of used MBB requires init
   // This can save memorys
   for (MachineBasicBlock &MBB : Fn) {
@@ -59,10 +59,10 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
   unsigned widen = 0;
   bool Changed = true;
 
-        LLVM_DEBUG(dbgs() << "compute Range\n");
+  LLVM_DEBUG(dbgs() << "compute Range\n");
   while (Changed) {
     Changed = false;
-    LLVM_DEBUG(dbgs() <<"scaned one time\n");
+    LLVM_DEBUG(dbgs() << "scaned one time\n");
     widen++;
 
     ReversePostOrderTraversal<MachineFunction *> RPOT(&Fn);
@@ -91,20 +91,20 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
 
       if (!oldout.equal(OutRanges.at(MBB))) {
         Changed = true;
-        LLVM_DEBUG(dbgs() <<"different out ranges of ");
+        LLVM_DEBUG(dbgs() << "different out ranges of ");
         LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-        LLVM_DEBUG(dbgs() <<" :\nold range "<< oldout);
-        LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
+        LLVM_DEBUG(dbgs() << " :\nold range " << oldout);
+        LLVM_DEBUG(dbgs() << "new range " << OutRanges.at(MBB));
         if (widen == WINDEN_GUARD) {
           OutRanges.at(MBB).setChangedUnknown(oldout);
-          LLVM_DEBUG(dbgs() <<"after set changed unknown");
+          LLVM_DEBUG(dbgs() << "after set changed unknown");
           LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-          LLVM_DEBUG(dbgs() <<"new range "<< OutRanges.at(MBB));
+          LLVM_DEBUG(dbgs() << "new range " << OutRanges.at(MBB));
         }
       }
     }
   }
-  LLVM_DEBUG(dbgs() <<"finished compute Range\n");
+  LLVM_DEBUG(dbgs() << "finished compute Range\n");
 }
 #undef WINDEN_GUARD
 
@@ -112,7 +112,7 @@ void X86RegValueTracking::transfer(MachineBasicBlock *MBB) {
   // get InRanges copy
   RegsRange Ranges = InRanges.at(MBB);
   for (auto &I : MBB->instrs()) {
-    LLVM_DEBUG(dbgs() << "Before step: "<< Ranges);
+    LLVM_DEBUG(dbgs() << "Before step: " << Ranges);
     MachineInstr *MI = &I;
     step(MI, Ranges);
     LLVM_DEBUG(dbgs() << "After step: " << Ranges);
@@ -122,13 +122,13 @@ void X86RegValueTracking::transfer(MachineBasicBlock *MBB) {
 
 void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   LLVM_DEBUG(dbgs() << *MI << "\n");
-      int i = 0;
-      LLVM_DEBUG(dbgs() << "Machine Operands: ");
-      for (const MachineOperand &MO : MI->operands()) {
-        LLVM_DEBUG(dbgs() << " " << i << " : " << MO );
-        i ++;
-      }
-      LLVM_DEBUG(dbgs() << "\n");
+  int i = 0;
+  LLVM_DEBUG(dbgs() << "Machine Operands: ");
+  for (const MachineOperand &MO : MI->operands()) {
+    LLVM_DEBUG(dbgs() << " " << i << " : " << MO);
+    i++;
+  }
+  LLVM_DEBUG(dbgs() << "\n");
   switch (MI->getOpcode()) {
   // check ;
   case X86::checkload64m:
@@ -160,9 +160,10 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   case X86::LEA64_32r: {
     X86AddressMode AM;
     unsigned dst = MI->getOperand(0).getReg();
-    if(!MI->getOperand(4).isImm()) break;
+    if (!MI->getOperand(4).isImm())
+      break;
     AM = getAddressFromInstr(MI, 1);
-    
+
     if (AM.GV != nullptr) {
       RangeInfo r1(Unknown);
       Ranges.setRegRange(dst, r1);
@@ -187,7 +188,7 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   case X86::ADD16ri8:
   case X86::ADD8ri8: {
     unsigned dst = MI->getOperand(0).getReg();
-    if(!MI->getOperand(2).isImm()){
+    if (!MI->getOperand(2).isImm()) {
       break;
     }
     int imm = MI->getOperand(2).getImm();
@@ -203,7 +204,7 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   case X86::MOV16ri:
   case X86::MOV8ri: {
     unsigned dst = MI->getOperand(0).getReg();
-    if(!MI->getOperand(1).isImm()){
+    if (!MI->getOperand(1).isImm()) {
       break;
     }
     int imm = MI->getOperand(1).getImm();
@@ -215,7 +216,7 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
       unsigned dst = MI->getOperand(0).getReg();
       unsigned src = MI->getOperand(1).getReg();
       RangeInfo r1 = Ranges.getRegRange(src);
-      LLVM_DEBUG(dbgs() <<"isMoveReg get Range: " << r1 << "\n");
+      LLVM_DEBUG(dbgs() << "isMoveReg get Range: " << r1 << "\n");
       Ranges.setRegRange(dst, r1);
     }
     // memory to register
@@ -228,8 +229,7 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
           if (X86::GR64RegClass.contains(Reg) ||
               X86::GR32RegClass.contains(Reg) ||
               X86::GR16RegClass.contains(Reg) ||
-              X86::GR8RegClass.contains(Reg)||
-              Reg == X86::RSP) {
+              X86::GR8RegClass.contains(Reg) || Reg == X86::RSP) {
             RangeInfo r(Unknown);
             Ranges.setRegRange(Reg, r);
           }
@@ -259,7 +259,7 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   // actual should be CFI_LABEL
   if (MI->isCall()) {
     Ranges.setAllUnknown();
-    RangeInfo writeable(InWrite,0,0 );
+    RangeInfo writeable(InWrite, 0, 0);
     Ranges.setRegRange(X86::RSP, writeable);
   }
 }
@@ -298,8 +298,9 @@ void X86RegValueTracking::InferenceCheck(MachineInstr *MI, RegsRange &Ranges) {
   }
   if (AM.BaseType == X86AddressMode::RegBase) {
     if (AM.IndexReg == 0) {
-      //FIXME
-      //This check function might be eliminable in the future, which means the range we infered here is not reliable
+      // FIXME
+      // This check function might be eliminable in the future, which means the
+      // range we infered here is not reliable
       RangeInfo r1 = Ranges.getRegRange(AM.Base.Reg);
       RangeInfo r2(getCheckRegion(MI), -AM.Disp, -AM.Disp);
 
@@ -310,14 +311,18 @@ void X86RegValueTracking::InferenceCheck(MachineInstr *MI, RegsRange &Ranges) {
     } else {
       /* RangeInfo BaseRange = Ranges.getRegRange(AM.Base.Reg); */
       /* RangeInfo IndexRange = Ranges.getRegRange(AM.IndexReg); */
-      /* // if BaseRange is in one region, then cal the index range as small num */
-      /* if(BaseRange.RangeClass == InRead || BaseRange.RangeClass == InWrite){ */
-      /*   RangeInfo newrange(SmallNum, -(BaseRange.UpRange + AM.Disp)/AM.Scale, -(BaseRange.LowRange + AM.Disp)/AM.Scale); */
+      /* // if BaseRange is in one region, then cal the index range as small num
+       */
+      /* if(BaseRange.RangeClass == InRead || BaseRange.RangeClass == InWrite){
+       */
+      /*   RangeInfo newrange(SmallNum, -(BaseRange.UpRange + AM.Disp)/AM.Scale,
+       * -(BaseRange.LowRange + AM.Disp)/AM.Scale); */
       /*   RangeInfo result = RangeInfo::cutRange(IndexRange, newrange); */
       /* Ranges.setRegRange(AM.IndexReg, result); */
       /* return; */
       /* }else if (IndexRange.RangeClass == SmallNum){ */
-      /*   RangeInfo r2 (getCheckRegion(MI), -IndexRange.UpRange*AM.Scale - AM.Disp, - IndexRange.LowRange *AM.Scale -AM.Disp); */
+      /*   RangeInfo r2 (getCheckRegion(MI), -IndexRange.UpRange*AM.Scale -
+       * AM.Disp, - IndexRange.LowRange *AM.Scale -AM.Disp); */
       /*   RangeInfo result = RangeInfo::cutRange(BaseRange, r2); */
       /*   Ranges.setRegRange(AM.Base.Reg, result); */
       /*   return; */
@@ -325,13 +330,11 @@ void X86RegValueTracking::InferenceCheck(MachineInstr *MI, RegsRange &Ranges) {
       return;
     }
   } else {
-    // TODO 
-    // for benign compiler, GV , which is a symbol, must located in the data domain
-    // as a result, we can assume GV is in write region then inference Index reg's range
-    // for example 
-    // checkstore GV(,%rax,4)
-    // which means rax must less then guardzone/4
-    // nothing I can do now
+    // TODO
+    // for benign compiler, GV , which is a symbol, must located in the data
+    // domain as a result, we can assume GV is in write region then inference
+    // Index reg's range for example checkstore GV(,%rax,4) which means rax must
+    // less then guardzone/4 nothing I can do now
   }
 }
 

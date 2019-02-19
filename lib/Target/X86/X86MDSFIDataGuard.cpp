@@ -21,25 +21,24 @@
 using namespace llvm;
 
 static cl::opt<bool>
-    enableX86OptBoundchecker("enable-x86-boundchecker-opt", cl::init(true),
-                             cl::Hidden,
-                             cl::desc("Enable X86 Boundchecker optimization."));
+    enableX86MDSFIDGOpt("enable-x86-mdsfidg-opt", cl::init(true), cl::Hidden,
+                        cl::desc("Enable X86 MDSFI data guard optimization."));
 
-static cl::opt<bool> enableX86LoopOptBoundchecker(
-    "enable-x86-boundchecker-loop-opt", cl::init(true), cl::Hidden,
-    cl::desc("Enable X86 Boundchecker loop optimization."));
+static cl::opt<bool> enableX86MDSFIDGLoopOpt(
+    "enable-x86-mdsfidg-loop-opt", cl::init(true), cl::Hidden,
+    cl::desc("Enable X86 MDSFI data guard loop optimization."));
 
-static cl::opt<bool>
-    enableX86Boundchecker("enable-x86-boundchecker", cl::init(true), cl::Hidden,
-                          cl::desc("Enable X86 Boundchecker."));
+static cl::opt<bool> enableX86MDSFIDG("enable-x86-mdsfidg", cl::init(true),
+                                      cl::Hidden,
+                                      cl::desc("Enable X86 MDSFI data guard."));
 
 namespace llvm {
-void initializeX86ConstraintCheckPass(PassRegistry &);
+void initializeX86MDSFIDataGuardPass(PassRegistry &);
 }
 
 namespace {
 
-class X86ConstraintCheck : public MachineFunctionPass {
+class X86MDSFIDataGuard : public MachineFunctionPass {
 public:
   static char ID;
   const X86Subtarget *STI;
@@ -55,8 +54,8 @@ public:
   std::map<MachineInstr *, bool> EliminableList;
 
   MachineLoopInfo *MLI;
-  X86ConstraintCheck() : MachineFunctionPass(ID) {
-    initializeX86ConstraintCheckPass(*PassRegistry::getPassRegistry());
+  X86MDSFIDataGuard() : MachineFunctionPass(ID) {
+    initializeX86MDSFIDataGuardPass(*PassRegistry::getPassRegistry());
   }
 
   bool runOnMachineFunction(MachineFunction &Fn) override;
@@ -76,21 +75,21 @@ public:
   bool hasIndirectCall(MachineFunction &Fn);
   unsigned GuardZoneSize = 4 * 1024;
 };
-char X86ConstraintCheck::ID = 0;
+char X86MDSFIDataGuard::ID = 0;
 } // namespace
 
 /* //read metadata and extract constraint. */
-/* bool X86ConstraintCheck::ExtracatConstraint(){ */
+/* bool X86MDSFIDataGuard::ExtracatConstraint(){ */
 /*   return false; */
 /* } */
 
-#define DEBUG_TYPE "Boundchecker"
+#define DEBUG_TYPE "MDSFIDG"
 
-void X86ConstraintCheck::getAnalysisUsage(AnalysisUsage &AU) const {
+void X86MDSFIDataGuard::getAnalysisUsage(AnalysisUsage &AU) const {
   MachineFunctionPass::getAnalysisUsage(AU);
   AU.addRequired<MachineLoopInfo>();
 }
-bool X86ConstraintCheck::hasIndirectCall(MachineFunction &Fn) {
+bool X86MDSFIDataGuard::hasIndirectCall(MachineFunction &Fn) {
   for (auto &MBB : Fn) {
     if (MBB.empty())
       continue;
@@ -118,7 +117,7 @@ bool X86ConstraintCheck::hasIndirectCall(MachineFunction &Fn) {
 }
 
 // if changed RSP ,should check RSP after that instructions
-bool X86ConstraintCheck::checkRSP(MachineFunction &Fn){
+bool X86MDSFIDataGuard::checkRSP(MachineFunction &Fn) {
   bool ret = false;
   for (auto &MBB : Fn) {
     if (MBB.empty())
@@ -130,12 +129,13 @@ bool X86ConstraintCheck::checkRSP(MachineFunction &Fn){
       DebugLoc DL = MI->getDebugLoc();
       MachineBasicBlock::iterator NMBBI = std::next(MBBI);
 
-      for(auto &MO : MI->defs()){
-        if(MO.isReg() && MO.getReg() == X86::RSP){
-          auto &NewMI = addDirectMem(BuildMI(MBB, MBBI, DL, TII->get(X86::checkstore64m)), X86::RSP);
+      for (auto &MO : MI->defs()) {
+        if (MO.isReg() && MO.getReg() == X86::RSP) {
+          auto &NewMI = addDirectMem(
+              BuildMI(MBB, MBBI, DL, TII->get(X86::checkstore64m)), X86::RSP);
           MBB.remove(NewMI);
           MBB.insertAfter(MBBI, NewMI);
-          LLVM_DEBUG(dbgs() <<"Insert a check of RSP\n"<<*MI <<"\n");
+          LLVM_DEBUG(dbgs() << "Insert a check of RSP\n" << *MI << "\n");
           ret = true;
         }
       }
@@ -145,7 +145,7 @@ bool X86ConstraintCheck::checkRSP(MachineFunction &Fn){
   return ret;
 }
 
-bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
+bool X86MDSFIDataGuard::runOnMachineFunction(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
   TII = STI->getInstrInfo();
   TRI = STI->getRegisterInfo();
@@ -155,33 +155,33 @@ bool X86ConstraintCheck::runOnMachineFunction(MachineFunction &Fn) {
   // in this function because any program may jump before any basicblock
   bool canOptimize = !hasIndirectCall(Fn);
 
-  enableX86LoopOptBoundchecker = enableX86OptBoundchecker && enableX86LoopOptBoundchecker;
+  enableX86LoopOpt = enableX86MDSFIDGOpt && enableX86MDSFIDGLoopOpt;
 
   // compute for LoopHoist
-  if (canOptimize && enableX86OptBoundchecker) {
+  if (canOptimize && enableX86MDSFIDGOpt) {
     checkRSP(Fn);
     RT.init(Fn);
     RT.computeRange(Fn);
   }
 
-  if (canOptimize && enableX86LoopOptBoundchecker) {
+  if (canOptimize && enableX86MDSFIDGLoopOpt) {
     LoopHoist();
   }
-  
+
   // after loophoist, compute it again
-  if (canOptimize && enableX86OptBoundchecker) {
+  if (canOptimize && enableX86MDSFIDGOpt) {
     RT.init(Fn);
     RT.computeRange(Fn);
   }
 
-  if (enableX86OptBoundchecker) {
+  if (enableX86MDSFIDGOpt) {
     OptimizeCheck(Fn, canOptimize);
   }
   LoweringMI(Fn);
   return true;
 }
-bool X86ConstraintCheck::OptimizeMBB(MachineBasicBlock &MBB,
-                                     X86RegValueTracking &RT) {
+bool X86MDSFIDataGuard::OptimizeMBB(MachineBasicBlock &MBB,
+                                    X86RegValueTracking &RT) {
   RangeInfo ReadRegion(InRead, GuardZoneSize, -GuardZoneSize);
   RangeInfo WriteRegion(InWrite, GuardZoneSize, -GuardZoneSize);
   // copy Range in BasicblockRanges
@@ -234,12 +234,12 @@ bool X86ConstraintCheck::OptimizeMBB(MachineBasicBlock &MBB,
 }
 
 // OptimizeCheck will store every eliminable MI in EliminableList
-bool X86ConstraintCheck::OptimizeCheck(MachineFunction &Fn, bool canOpt) {
+bool X86MDSFIDataGuard::OptimizeCheck(MachineFunction &Fn, bool canOpt) {
   LLVM_DEBUG(dbgs() << "Global Optimizing\n");
   MachineBasicBlock &MBB = Fn.front();
   MachineBasicBlock::iterator MBBI = MBB.getFirstNonPHI();
   DebugLoc DL;
-  if(MBBI != MBB.end())
+  if (MBBI != MBB.end())
     DL = MBBI->getDebugLoc();
 
   for (MachineBasicBlock &MBB : Fn) {
@@ -253,18 +253,18 @@ bool X86ConstraintCheck::OptimizeCheck(MachineFunction &Fn, bool canOpt) {
     OptimizeMBB(MBB, RT);
   }
   // Loop Optimization is definitely between BBs
-  if (canOpt && enableX86LoopOptBoundchecker) {
+  if (canOpt && enableX86LoopOpt) {
     OptimizeLoop(Fn);
   }
 
   return false;
 }
 
-bool X86ConstraintCheck::isLoopBody(MachineBasicBlock *MBB, MachineLoop *L) {
+bool X86MDSFIDataGuard::isLoopBody(MachineBasicBlock *MBB, MachineLoop *L) {
   return L->contains(MBB) && MBB != L->getHeader();
 }
 
-void X86ConstraintCheck::LoopHoist() {
+void X86MDSFIDataGuard::LoopHoist() {
   for (auto &L : MLI->getBase()) {
     ReversePostOrderTraversal<MachineLoop *> RPOT(L);
     for (MachineLoop *ML : RPOT) {
@@ -276,7 +276,8 @@ void X86ConstraintCheck::LoopHoist() {
   }
 }
 
-bool X86ConstraintCheck::hoist(MachineLoop *ML, MachineLoopInfo *MLI, X86RegValueTracking &UpLevelRT) {
+bool X86MDSFIDataGuard::hoist(MachineLoop *ML, MachineLoopInfo *MLI,
+                              X86RegValueTracking &UpLevelRT) {
 
   MachineLoopBlocksRPO RPOTBlocks(ML);
   RPOTBlocks.perform(MLI);
@@ -303,7 +304,8 @@ bool X86ConstraintCheck::hoist(MachineLoop *ML, MachineLoopInfo *MLI, X86RegValu
   }
 
   // who needs to be hoisted?
-  // the baseregister of check function and it's indexreg is inRange in one compute
+  // the baseregister of check function and it's indexreg is inRange in one
+  // compute
   std::set<unsigned> hoistreg;
   for (MachineBasicBlock *MBB : ML->blocks()) {
     for (MachineBasicBlock::instr_iterator I = MBB->instr_begin();
@@ -314,10 +316,12 @@ bool X86ConstraintCheck::hoist(MachineLoop *ML, MachineLoopInfo *MLI, X86RegValu
       case X86::checkstore64m: {
         X86AddressMode AM = getAddressFromInstr(MI, 0);
         if (AM.BaseType == X86AddressMode::RegBase) {
-          if(AM.IndexReg != 0){
-            if(CurLoopRT.InRanges.at(MBB).getRegRange(AM.IndexReg).RangeClass == SmallNum)
-            hoistreg.insert(AM.Base.Reg);
-          }else{
+          if (AM.IndexReg != 0) {
+            if (CurLoopRT.InRanges.at(MBB)
+                    .getRegRange(AM.IndexReg)
+                    .RangeClass == SmallNum)
+              hoistreg.insert(AM.Base.Reg);
+          } else {
             hoistreg.insert(AM.Base.Reg);
           }
         }
@@ -341,37 +345,38 @@ bool X86ConstraintCheck::hoist(MachineLoop *ML, MachineLoopInfo *MLI, X86RegValu
     }
   }
 
-  MachineBasicBlock* Preheader = ML->getLoopPreheader();
-  //TODO if preheader not exist, insert one 
-  if(Preheader == nullptr){
+  MachineBasicBlock *Preheader = ML->getLoopPreheader();
+  // TODO if preheader not exist, insert one
+  if (Preheader == nullptr) {
     return false;
   }
   LLVM_DEBUG(dbgs() << "Loop Preheader is: ");
-  LLVM_DEBUG(Preheader -> printAsOperand(dbgs(),false));
-  LLVM_DEBUG(dbgs() <<"\n");
+  LLVM_DEBUG(Preheader->printAsOperand(dbgs(), false));
+  LLVM_DEBUG(dbgs() << "\n");
 
   MachineBasicBlock &preheader = *Preheader;
   MachineBasicBlock::iterator MBBI = Preheader->getLastNonDebugInstr();
-    DebugLoc DL;
-  if(MBBI != Preheader->end()){
+  DebugLoc DL;
+  if (MBBI != Preheader->end()) {
     DL = MBBI->getDebugLoc();
-  }else {
+  } else {
   }
 
   LLVM_DEBUG(dbgs() << "Loop Hoist Register: ");
-  for(unsigned reg :hoistreg){
-    LLVM_DEBUG(dbgs() << TRI->getRegAsmName(reg)<< "\t");
-    addDirectMem(BuildMI(preheader, MBBI, DL, TII->get(X86::checkstore64m)),reg);
+  for (unsigned reg : hoistreg) {
+    LLVM_DEBUG(dbgs() << TRI->getRegAsmName(reg) << "\t");
+    addDirectMem(BuildMI(preheader, MBBI, DL, TII->get(X86::checkstore64m)),
+                 reg);
   }
-  LLVM_DEBUG(dbgs() <<"\n");
+  LLVM_DEBUG(dbgs() << "\n");
 
   for (MachineLoop *SubLoop : *ML) {
     hoist(SubLoop, MLI, CurLoopRT);
   }
 }
 
-bool X86ConstraintCheck::computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
-                                     X86RegValueTracking &UpLevelRT) {
+bool X86MDSFIDataGuard::computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
+                                    X86RegValueTracking &UpLevelRT) {
 
   MachineLoopBlocksRPO RPOTBlocks(ML);
   RPOTBlocks.perform(MLI);
@@ -392,14 +397,14 @@ bool X86ConstraintCheck::computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
   for (MachineBasicBlock *MBB : RPOTBlocks) {
     for (auto &it : MBB->predecessors()) {
       MachineBasicBlock *beforeMBB = &*it;
-    LLVM_DEBUG(dbgs() << "OutRanges of header's predecessors\n");
-    LLVM_DEBUG(beforeMBB->printAsOperand(dbgs()));
-    LLVM_DEBUG(dbgs()<<"\n"<< CurLoopRT.OutRanges.at(beforeMBB)<< "\n" );
+      LLVM_DEBUG(dbgs() << "OutRanges of header's predecessors\n");
+      LLVM_DEBUG(beforeMBB->printAsOperand(dbgs()));
+      LLVM_DEBUG(dbgs() << "\n" << CurLoopRT.OutRanges.at(beforeMBB) << "\n");
       CurLoopRT.InRanges.at(MBB).merge(CurLoopRT.OutRanges.at(beforeMBB));
     }
     LLVM_DEBUG(dbgs() << "InRanges of MBB before transfer in loop\n");
     LLVM_DEBUG(MBB->printAsOperand(dbgs()));
-    LLVM_DEBUG(dbgs()<<"\n"<< CurLoopRT.InRanges.at(MBB)<< "\n" );
+    LLVM_DEBUG(dbgs() << "\n" << CurLoopRT.InRanges.at(MBB) << "\n");
 
     CurLoopRT.transfer(MBB);
   }
@@ -487,7 +492,7 @@ bool computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
 
 // TODO currently we can only handle nature loop
 // no opt on irreducible loop will not cause security problem
-bool X86ConstraintCheck::OptimizeLoop(MachineFunction &Fn) {
+bool X86MDSFIDataGuard::OptimizeLoop(MachineFunction &Fn) {
   for (auto &L : MLI->getBase()) {
     // FIXME ReversePostOrder to scan subloop
     // currently this API works weird (seems does not work fine with sub loops)
@@ -502,7 +507,7 @@ bool X86ConstraintCheck::OptimizeLoop(MachineFunction &Fn) {
   }
 }
 
-bool X86ConstraintCheck::LoweringMI(MachineFunction &Fn) {
+bool X86MDSFIDataGuard::LoweringMI(MachineFunction &Fn) {
   for (MachineBasicBlock &MBB : Fn) {
     if (MBB.empty())
       continue;
@@ -518,7 +523,7 @@ bool X86ConstraintCheck::LoweringMI(MachineFunction &Fn) {
       switch (MI->getOpcode()) {
       case X86::checkstore64m:
       case X86::checkload64m: {
-        if (!enableX86Boundchecker) {
+        if (!enableX86MDSFIDG) {
           MBBI->eraseFromParent();
           break;
         }
@@ -553,12 +558,12 @@ bool X86ConstraintCheck::LoweringMI(MachineFunction &Fn) {
 
 #undef DEBUG_TYPE
 
-INITIALIZE_PASS_BEGIN(X86ConstraintCheck, "x86-constraint-check",
-                      "X86 Constraint Check", false, false)
+INITIALIZE_PASS_BEGIN(X86MDSFIDataGuard, "x86-constraint-check",
+                      "X86 MDSFI data guard", false, false)
 INITIALIZE_PASS_DEPENDENCY(MachineLoopInfo)
-INITIALIZE_PASS_END(X86ConstraintCheck, "x86-constraint-check",
-                    "X86 Constraint Check", false, false)
+INITIALIZE_PASS_END(X86MDSFIDataGuard, "x86-constraint-check",
+                    "X86 MDSFI data guard", false, false)
 
-FunctionPass *llvm::createX86ConstraintCheck() {
-  return new X86ConstraintCheck();
+FunctionPass *llvm::createX86MDSFIDataGuard() {
+  return new X86MDSFIDataGuard();
 }
