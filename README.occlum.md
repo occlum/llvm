@@ -5,7 +5,7 @@ This toolchain also require clang and lld, so clone occlum lld into lld tools
 cd tools
 git clone -b for_occlum https://github.com/occlum/lld
 ```
-Then clone clang to tools and checkout out our commit.
+Then clone clang to tools and checkout our commit.
 ```
 cd tools
 git clone https://github.com/llvm-mirror/clang 
