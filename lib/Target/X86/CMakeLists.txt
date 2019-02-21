@@ -68,7 +68,6 @@ set(sources
   X86MDSFIDataGuard.cpp
   X86MDSFIControlGuard.cpp
   X86RegValueTracking.cpp
-  X86CuriousMe.cpp
   )
 
 add_llvm_target(X86CodeGen ${sources})

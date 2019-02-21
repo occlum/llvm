@@ -5,10 +5,11 @@ This toolchain also require clang and lld, so clone occlum lld into lld tools
 cd tools
 git clone -b for_occlum https://github.com/occlum/lld
 ```
-Then clone clang's release_70 branch to tools 
+Then clone clang to tools and checkout out our commit.
 ```
 cd tools
-git clone -b release_70 https://github.com/llvm-mirror/clang 
+git clone https://github.com/llvm-mirror/clang 
+git checkout 0513b409d5e
 ```
 
 To build llvm, make a build dir aloneside with llvm  
@@ -16,7 +17,7 @@ To build llvm, make a build dir aloneside with llvm
 cd ../
 mkdir build-llvm
 cd build-llvm
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True -DLLVM_TARGETS_TO_BUILD="X86" CMAKE_BUILD_TYPE=Debug ../llvm/
+cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True -DLLVM_TARGETS_TO_BUILD="X86" ../llvm/
 make
 ```
 

@@ -122,7 +122,7 @@ FunctionPass *createX86EvexToVexInsts();
 FunctionPass *createX86RetpolineThunksPass();
 
 /// This pass for MDSFI Data guards. 
-FunctionPass *createX86MDSFIDataGuards();
+FunctionPass *createX86MDSFIDataGuard();
 
 /// This pass for MDSFI Control Guards at backend
 FunctionPass *createX86MDSFIControlGuard();

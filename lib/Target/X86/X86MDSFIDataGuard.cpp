@@ -155,7 +155,7 @@ bool X86MDSFIDataGuard::runOnMachineFunction(MachineFunction &Fn) {
   // in this function because any program may jump before any basicblock
   bool canOptimize = !hasIndirectCall(Fn);
 
-  enableX86LoopOpt = enableX86MDSFIDGOpt && enableX86MDSFIDGLoopOpt;
+  enableX86MDSFIDGLoopOpt = enableX86MDSFIDGOpt && enableX86MDSFIDGLoopOpt;
 
   // compute for LoopHoist
   if (canOptimize && enableX86MDSFIDGOpt) {
@@ -253,7 +253,7 @@ bool X86MDSFIDataGuard::OptimizeCheck(MachineFunction &Fn, bool canOpt) {
     OptimizeMBB(MBB, RT);
   }
   // Loop Optimization is definitely between BBs
-  if (canOpt && enableX86LoopOpt) {
+  if (canOpt && enableX86MDSFIDGLoopOpt) {
     OptimizeLoop(Fn);
   }
 
