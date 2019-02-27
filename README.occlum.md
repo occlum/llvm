@@ -21,12 +21,14 @@ Then, we can build LLVM, Clang, and LLD with the following commands:
     cd /path/to/occlum/llvm/../
     mkdir build-llvm
     cd build-llvm
-    cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True -DLLVM_TARGETS_TO_BUILD="X86" ../llvm/
+    cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True -DLLVM_TARGETS_TO_BUILD="X86" -DCMAKE_INSTALL_PREFIX=/usr/local/occlum/ ../llvm/
     make
+    sudo make install
 
 After LLVM is built, make sure LLVM binaries can be found by adding the following line to the config file for your shell (e.g., `~/.bashrc`)
 
-    export PATH="/path/to/occlum/llvm/../build-llvm/bin:$PATH"
+    export PATH="/usr/local/occlum/bin:$PATH"
+
 
 ## How to use
 
