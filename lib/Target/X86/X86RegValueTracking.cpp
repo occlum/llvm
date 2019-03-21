@@ -53,7 +53,7 @@ void X86RegValueTracking::init(MachineFunction &Fn) {
   }
 }
 
-#define WINDEN_GUARD 10
+#define WIDEN_GUARD 10
 bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
 
   unsigned widen = 0;
@@ -95,7 +95,7 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
         LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
         LLVM_DEBUG(dbgs() << " :\nold range " << oldout);
         LLVM_DEBUG(dbgs() << "new range " << OutRanges.at(MBB));
-        if (widen == WINDEN_GUARD) {
+        if (widen == WIDEN_GUARD) {
           OutRanges.at(MBB).setChangedUnknown(oldout);
           LLVM_DEBUG(dbgs() << "after set changed unknown");
           LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));

@@ -161,9 +161,9 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
   /* LLVM_DEBUG(dbgs() <<"First MI : " << FirstMI); */
   const DebugLoc &FirstDL = FirstMI.getDebugLoc();
   BuildMI(FirstMBB, FirstMI, FirstDL, TII->get(X86::NOOPL))
-      .addReg(X86::RAX)
+      .addReg(X86::RBX)
       .addImm(1)
-      .addReg(X86::RAX)
+      .addReg(X86::RBX)
       .addImm(512)
       .addReg(0);
 
@@ -190,9 +190,9 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
       case X86::CALLpcrel32:
       case X86::CALLpcrel16:
         BuildMI(MBB, NMBBI, DL, TII->get(X86::NOOPL))
-            .addReg(X86::RAX)
+            .addReg(X86::RBX)
             .addImm(1)
-            .addReg(X86::RAX)
+            .addReg(X86::RBX)
             .addImm(512)
             .addReg(0);
       }
@@ -214,9 +214,9 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
     MachineInstr &MI = *I;
     const DebugLoc &DL = MI.getDebugLoc();
     BuildMI(MBB, MI, DL, TII->get(X86::NOOPL))
-        .addReg(X86::RAX)
+        .addReg(X86::RBX)
         .addImm(1)
-        .addReg(X86::RAX)
+        .addReg(X86::RBX)
         .addImm(512)
         .addReg(0);
   }
