@@ -131,9 +131,8 @@ bool X86MDSFIDataGuard::checkRSP(MachineFunction &Fn) {
 
       for (auto &MO : MI->defs()) {
         if (MO.isReg() && MO.getReg() == X86::RSP) {
-          auto &NewMI = addDirectMem(
-              BuildMI(MBB, MBBI, DL, TII->get(X86::checkstore64m)), X86::RSP);
-          MBB.remove(NewMI);
+          MachineInstr *NewMI = addDirectMem(
+              BuildMI(Fn, DL, TII->get(X86::checkstore64m)), X86::RSP);
           MBB.insertAfter(MBBI, NewMI);
           LLVM_DEBUG(dbgs() << "Insert a check of RSP\n" << *MI << "\n");
           ret = true;
