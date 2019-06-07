@@ -11,8 +11,8 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/RegisterScavenging.h"
 
 using namespace llvm;
 
@@ -44,20 +44,26 @@ public:
   const TargetRegisterInfo *TRI;
   std::unique_ptr<RegScavenger> RS;
 
-  /// This function will replace return instruction with a pop, CFI check and an indirect jump
+  /// Handle all Calls, invoke all indirect jumps
+  bool HandleCalls(MachineBasicBlock &MBB, MachineInstr &MI);
+
+  /// This function will replace one return instruction with a pop, CFI check
+  /// and an indirect jump
+  bool HandleRets(MachineBasicBlock &MBB, MachineInstr &MI);
   bool HandleRet(MachineBasicBlock &MBB, MachineInstr &MI);
 
-  bool HandleIndirectBr(MachineBasicBlock &MBB, MachineInstr &MI);
+  /// Handle all indirect jumps
+  bool HandleIndirectBrs(MachineBasicBlock &MBB, MachineInstr &MI);
 
-  /// Replace a memory-based indirect call with a memory load and register-based indirect call
-  /// also insert a CFI check before register-based indirect call 
-  bool HandleIndirectMemCall(MachineBasicBlock &MBB, MachineInstr &MI);
+  bool HandleRegInst(MachineBasicBlock &MBB, MachineInstr &MI, unsigned LabelReg);
+  bool HandleMemInst(MachineBasicBlock &MBB, MachineInstr &MI, unsigned Opcode, unsigned TargetReg, unsigned LabelReg);
 
-  /// Insert a CFI check before register-based indirect call
-  bool HandleIndirectRegCall(MachineBasicBlock &MBB, MachineInstr &MI);
-
-  /// Insert CFI label before every function. If hasIndirectJump is true, then insert CFI labels before every basicblock either.
-  bool InsertCFILabel(MachineFunction &Fn, bool hasIndirectJump);
+  /// Insert CFI label before every function. If hasIndirectJump is true, then
+  /// insert CFI labels before every basicblock either.
+  bool InsertCFILabels(MachineFunction &Fn, bool hasIndirectJump);
+  bool InsertOneCFILabel(MachineInstr &MI);
+  bool InsertOneCFILabel(MachineInstr &MI, bool InsertAfter);
+  bool isCFILabel(MachineInstr & MI);
 
   bool RelocatePIC(MachineFunction &Fn);
   bool ds2fs(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
@@ -68,17 +74,33 @@ public:
 } // namespace
 char X86MDSFIControlGuard::ID = 0;
 
+bool X86MDSFIControlGuard::HandleRets(MachineBasicBlock &MBB,
+                                      MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  default:
+    LLVM_DEBUG(dbgs() << "Unhandled return instruction\t" << MI);
+    return false;
+    break;
+  case X86::RET:
+  case X86::RETL:
+  case X86::RETQ:
+    HandleRet(MBB, MI);
+    break;
+  case X86::TAILJMPr64:
+    HandleRegInst(MBB, MI, X86::R10);
+    break;
+  case X86::TAILJMPm64:
+    HandleMemInst(MBB, MI, X86::TAILJMPr64,X86::R10, X86::R11);
+    break;
+    // jmp with imm target, no need to handle
+  case X86::TAILJMPd64:
+  case X86::TAILJMPd_CC:
+    break;
+  }
+  return true;
+}
+
 bool X86MDSFIControlGuard::HandleRet(MachineBasicBlock &MBB, MachineInstr &MI) {
-      switch (MI.getOpcode()) {
-      default:
-        LLVM_DEBUG(dbgs() <<"Unhandled return instruction\t"<<MI<<"\n");
-        return false;
-        break;
-      case X86::RET:
-      case X86::RETL:
-      case X86::RETQ:
-        break;
-      }
   const DebugLoc &DL = MI.getDebugLoc();
   // popq %r11
   BuildMI(MBB, MI, DL, TII->get(X86::POP64r), X86::R11);
@@ -101,104 +123,212 @@ bool X86MDSFIControlGuard::HandleRet(MachineBasicBlock &MBB, MachineInstr &MI) {
   MI.eraseFromParent();
   return true;
 }
-
-bool X86MDSFIControlGuard::HandleIndirectBr(MachineBasicBlock &MBB,
-                                            MachineInstr &MI) {
+/// opcode is the replacement of the original instruction
+bool X86MDSFIControlGuard::HandleMemInst(MachineBasicBlock &MBB,
+                                         MachineInstr &MI, unsigned opcode, 
+                                         unsigned TargetReg, unsigned LabelReg) {
   const DebugLoc &DL = MI.getDebugLoc();
-  LLVM_DEBUG(dbgs() << "HandleIndirectBr\n");
-  // No matter under what situation(Memory based jump or register based jump), we need a free register;
-  // Firstly we try to use RegisterScavenging
-  RegScavenger *RegSc = RS.get();
-  RegSc->enterBasicBlockEnd(MBB);
-  unsigned ScavReg = RegSc->scavengeRegisterBackwards(X86::GR64RegClass, MachineBasicBlock::iterator(MI),false,0);
-  if(ScavReg == 0){
-    LLVM_DEBUG(dbgs() <<"Can not find free register for indirect branch\n");
-    return false;
-  }
+  LLVM_DEBUG(dbgs() << "HandleMemInst\t" << MI);
+  // We might need two register, one for target address, the other for CFI label.
+  unsigned MemReg;
 
+  // Does TargetReg need spill? Does LabelReg need spill?
+  bool spillTarget = false, spillLabel = false;
 
-  LLVM_DEBUG(dbgs() <<"ScavReg for indirectBranch: "<< TRI->getRegAsmName(ScavReg)<<"\n");
-
-  unsigned TargetReg;
   X86AddressMode AM;
-  MachineInstr *loadtarget;
-  switch (MI.getOpcode()) {
-  default:
-    LLVM_DEBUG(dbgs() <<"Unhandled indirect branch instruction\t"<<MI<<"\n");
-    return false;
-    break;
-  case X86::JMP16m:
-  case X86::JMP32m:
-  case X86::JMP64m:
-    // which physic register is used in this jump?
-    AM = getAddressFromInstr(&MI, 0);
-    TargetReg = AM.BaseType == X86AddressMode::RegBase? AM.Base.Reg : AM.IndexReg;
-    // movq (x), x
-    loadtarget = BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), TargetReg);
-    for (auto &MO : MI.operands()) {
-      loadtarget->addOperand(MO);
-      MI.RemoveOperand(MO.getIndex());
+  // Which physic register is used in this Memory address?
+  AM = getAddressFromInstr(&MI, 0);
+  MemReg = AM.BaseType == X86AddressMode::RegBase ? AM.Base.Reg : AM.IndexReg;
+
+  // We didn't specific TargetReg
+  if(TargetReg == 0) {
+
+    // if MemReg is a general purpose register, we use MemReg as TargetReg 
+    // Note that GR64 class include RIP and RSP, and we have to exclude it
+    if(!X86::GR64RegClass.contains(MemReg) && MemReg!= X86::RSP && MemReg != X86::RIP){
+      TargetReg = MemReg;
+    } else {
+      // otherwise if MemReg is RSP or RIP, we have to get another register
+      RegScavenger *RegSc = RS.get();
+      RegSc->enterBasicBlockEnd(MBB);
+      TargetReg = RegSc->scavengeRegisterBackwards(
+          X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0);
+      if (TargetReg == 0) {
+        LLVM_DEBUG(dbgs() << "Can not find free register for indirect branch\t"
+                          << MI);
+        // Since MemReg is not a GR, we use R10 directly.
+        TargetReg = X86::R10;
+        LLVM_DEBUG(dbgs() << "spill one for TargetReg\t"<<TRI->getRegAsmName(TargetReg)<<"\n");
+        spillTarget = true;
+      }
     }
-    MI.setDesc(TII->get(X86::JMP64r));
-    MachineInstrBuilder(*MBB.getParent(), &MI).addReg(TargetReg);
-    break;
-  case X86::JMP16r:
-  case X86::JMP32r:
-  case X86::JMP64r:
-  TargetReg = MI.getOperand(0).getReg();
-    break;
   }
-  // movq (%TargetReg) , %FreeReg load cfi lable
-  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), ScavReg),
+
+  if(LabelReg == 0){
+    RegScavenger *RegSc = RS.get();
+    RegSc->enterBasicBlockEnd(MBB);
+    LabelReg = RegSc->scavengeRegisterBackwards(
+        X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0);
+    if (LabelReg == 0) {
+      LLVM_DEBUG(dbgs() << "Can not find free register for indirect branch\t"
+                        << MI);
+      // If TargetReg already token R10, we use R11
+      LabelReg = TargetReg == X86::R10 ? X86::R11 : X86::R10;
+      LLVM_DEBUG(dbgs() << "spill one for LabelReg \t"<<TRI->getRegAsmName(LabelReg)<<"\n");
+      spillLabel = true;
+    }
+  }
+
+  LLVM_DEBUG(dbgs() << "TargetReg for memory based Instruction: "
+                    << TRI->getRegAsmName(TargetReg) << "\n");
+  LLVM_DEBUG(dbgs() << "LabelReg for memory based Instruction: "
+                    << TRI->getRegAsmName(LabelReg) << "\n");
+
+  if(spillTarget)
+    BuildMI(MBB, MI, DL, TII->get(X86::PUSH64r), TargetReg);
+  if(spillLabel)
+    BuildMI(MBB, MI, DL, TII->get(X86::PUSH64r), LabelReg);
+
+  // movq (x), x
+  addFullAddress(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), TargetReg), AM);
+
+  // movq (%TargetReg) , %FreeReg; load cfi lable
+  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), LabelReg),
                TargetReg);
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(ScavReg);
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(ScavReg);
-  return true;
-}
+  // bndck %FreeReg
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(LabelReg);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(LabelReg);
+  if(spillTarget)
+    BuildMI(MBB, MI, DL, TII->get(X86::POP64r), TargetReg);
+  if(spillLabel)
+    BuildMI(MBB, MI, DL, TII->get(X86::POP64r), LabelReg);
 
-// replace call memory to call register
-bool X86MDSFIControlGuard::HandleIndirectMemCall(MachineBasicBlock &MBB,
-                                                 MachineInstr &MI) {
-  const DebugLoc &DL = MI.getDebugLoc();
-  LLVM_DEBUG(dbgs() << "HandleIndirectMemCall " << MI << "\n");
-  // movq (x),%r11
-  MachineInstr *loadtarget =
-      BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), X86::R11);
-  for (auto &MO : MI.operands()) {
-    loadtarget->addOperand(MO);
-  }
-  LLVM_DEBUG(dbgs() << "loadtarget " << *loadtarget << "\n");
-  // movq (%r11) , %r10
-  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), X86::R10),
-               X86::R11);
-  // bndcl (%r10), %bnd2
-  // directly check because code section must be readonly
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(X86::R10);
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(X86::R10);
-
-  // call *r10
-  BuildMI(MBB, MI, DL, TII->get(X86::CALL64r), X86::R11);
+  BuildMI(MBB, MI, DL, TII->get(opcode), TargetReg);
   MI.eraseFromParent();
   return true;
 }
 
-bool X86MDSFIControlGuard::HandleIndirectRegCall(MachineBasicBlock &MBB,
-                                                 MachineInstr &MI) {
+bool X86MDSFIControlGuard::HandleRegInst(MachineBasicBlock &MBB,
+                                         MachineInstr &MI, unsigned LabelReg) {
   const DebugLoc &DL = MI.getDebugLoc();
-  MachineOperand &MO = MI.getOperand(0);
-  LLVM_DEBUG(dbgs() << "HandleIndirectRegCall " << MI << "\n");
-  unsigned labelReg = MO.getReg() == X86::R10 ? X86::R11 : X86::R10;
-  // mov (MO), %r10
-  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), labelReg),
-               MO.getReg());
-  // bndcu (%r10), bnd2
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(labelReg);
-  // bndcl (%r10), bnd2
-  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(labelReg);
+  LLVM_DEBUG(dbgs() << "HandleRegInst\t" << MI);
+  unsigned TargetReg;
+  bool spillLabel = false;
+  TargetReg = MI.getOperand(0).getReg();
+  if(LabelReg == 0){
+    RegScavenger *RegSc = RS.get();
+    RegSc->enterBasicBlockEnd(MBB);
+    LabelReg = RegSc->scavengeRegisterBackwards(
+        X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0);
+    if (LabelReg == 0) {
+      LLVM_DEBUG(dbgs() << "Can not find free register for indirect branch\t"
+                        << MI);
+      LabelReg = TargetReg == X86::R10 ? X86::R11 : X86::R10;
+      LLVM_DEBUG(dbgs() << "spill one for LabelReg\t"<<TRI->getRegAsmName(LabelReg)<<"\n");
+      spillLabel = true;
+    }
+  }
+
+  LLVM_DEBUG(dbgs() << "LabelReg for register based instruction: "
+                    << TRI->getRegAsmName(LabelReg) << "\n");
+  if(spillLabel)
+    BuildMI(MBB, MI, DL, TII->get(X86::PUSH64r), LabelReg);
+  // movq (%TargetReg) , %FreeReg load cfi lable
+  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), LabelReg),
+               TargetReg);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(LabelReg);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(LabelReg);
+  if(spillLabel)
+    BuildMI(MBB, MI, DL, TII->get(X86::POP64r), LabelReg);
   return true;
 }
 
-bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
+
+bool X86MDSFIControlGuard::HandleIndirectBrs(MachineBasicBlock &MBB,
+                                             MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  default:
+    LLVM_DEBUG(dbgs() << "Unhandled indirect branch instruction\t" << MI
+                      << "\n");
+    return false;
+    break;
+  case X86::JMP16r:
+  case X86::JMP32r:
+  case X86::JMP64r:
+    HandleRegInst(MBB, MI, 0);
+    break;
+  case X86::JMP16m:
+  case X86::JMP32m:
+  case X86::JMP64m:
+    HandleMemInst(MBB, MI, X86::JMP64r, 0, 0);
+    break;
+  }
+  return true;
+}
+bool X86MDSFIControlGuard::isCFILabel(MachineInstr & MI) {
+  if( MI.getOpcode() != X86::NOOPL || MI.getNumOperands()!= 5){
+    return false;
+  }
+  MachineOperand MO = MI.getOperand(0);
+  if(!MO.isReg() || MO.getReg() != X86::RBX){
+    return false;
+  }
+  MO = MI.getOperand(1);
+  if(!MO.isImm() || MO.getImm() != 1){
+    return false;
+  }
+  MO = MI.getOperand(2);
+  if(!MO.isReg() || MO.getReg() != X86::RBX){
+    return false;
+  }
+  MO = MI.getOperand(3);
+  if(!MO.isImm() || MO.getImm() != 512){
+    return false;
+  }
+  MO = MI.getOperand(4);
+  if(!MO.isImm() || MO.getImm() != 0){
+    return false;
+  }
+  return true;
+}
+
+//insert one CFI label before MI
+bool X86MDSFIControlGuard::InsertOneCFILabel(MachineInstr &MI){
+  const DebugLoc &DL = MI.getDebugLoc();
+  MachineBasicBlock &MBB = *MI.getParent();
+
+  if(isCFILabel(MI))
+    return false;
+  BuildMI(MBB, MI, DL, TII->get(X86::NOOPL))
+      .addReg(X86::RBX)
+      .addImm(1)
+      .addReg(X86::RBX)
+      .addImm(512)
+      .addReg(0);
+  return true;
+}
+
+bool X86MDSFIControlGuard::InsertOneCFILabel(MachineInstr &MI, bool InsertAfter){
+  const DebugLoc &DL = MI.getDebugLoc();
+  MachineBasicBlock &MBB = *MI.getParent();
+
+  if(isCFILabel(MI))
+    return false;
+  MachineInstr *LabelMI = BuildMI(MBB, MI, DL, TII->get(X86::NOOPL))
+      .addReg(X86::RBX)
+      .addImm(1)
+      .addReg(X86::RBX)
+      .addImm(512)
+      .addReg(0);
+  if(InsertAfter){
+    MachineBasicBlock::iterator pos = MI;
+    MBB.insertAfter(pos, LabelMI->removeFromParent());
+  }
+  return true;
+}
+  
+
+bool X86MDSFIControlGuard::InsertCFILabels(MachineFunction &Fn,
                                           bool hasIndirectJump) {
   MachineFunction::iterator FirstMBBI = Fn.begin();
 
@@ -220,13 +350,7 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
   auto &FirstMBB = *FirstMBBI;
   auto &FirstMI = *FirstMBB.getFirstNonPHI();
   /* LLVM_DEBUG(dbgs() <<"First MI : " << FirstMI); */
-  const DebugLoc &FirstDL = FirstMI.getDebugLoc();
-  BuildMI(FirstMBB, FirstMI, FirstDL, TII->get(X86::NOOPL))
-      .addReg(X86::RBX)
-      .addImm(1)
-      .addReg(X86::RBX)
-      .addImm(512)
-      .addReg(0);
+  InsertOneCFILabel(FirstMI);
 
   // scan every instruction, insert CFI_LABEL after call
   for (auto &MBB : Fn) {
@@ -237,27 +361,10 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
     while (MBBI != E) {
       MachineBasicBlock::iterator NMBBI = std::next(MBBI);
       MachineInstr &MI = *MBBI;
-      const DebugLoc &DL = MI.getDebugLoc();
-      switch (MI.getOpcode()) {
-      default:
-        break;
-      /* case X86::CALL16m: */
-      /* case X86::CALL32m: */
-      /* case X86::CALL64m: */
-      case X86::CALL16r:
-      case X86::CALL32r:
-      case X86::CALL64r:
-      case X86::CALL64pcrel32:
-      case X86::CALLpcrel32:
-      case X86::CALLpcrel16:
-        BuildMI(MBB, NMBBI, DL, TII->get(X86::NOOPL))
-            .addReg(X86::RBX)
-            .addImm(1)
-            .addReg(X86::RBX)
-            .addImm(512)
-            .addReg(0);
-      }
 
+      if(MI.isCall() && !MI.isReturn()){
+        InsertOneCFILabel(MI, true);
+      }
       MBBI = NMBBI;
     }
   }
@@ -269,19 +376,14 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
   // Because there are some indirect jump inside this funciton, it might
   // want to jump to any of BB at this function
   // We omit first basicblock because it's already have one CFI_LABEL
-  for (MachineFunction::iterator MBBI = ++Fn.begin() ;MBBI!=Fn.end();MBBI++) {
+  for (MachineFunction::iterator MBBI = ++Fn.begin(); MBBI != Fn.end();
+       MBBI++) {
     MachineBasicBlock &MBB = *MBBI;
     if (MBB.empty())
       continue;
     MachineBasicBlock::instr_iterator I = MBB.instr_begin();
     MachineInstr &MI = *I;
-    const DebugLoc &DL = MI.getDebugLoc();
-    BuildMI(MBB, MI, DL, TII->get(X86::NOOPL))
-        .addReg(X86::RBX)
-        .addImm(1)
-        .addReg(X86::RBX)
-        .addImm(512)
-        .addReg(0);
+    InsertOneCFILabel(MI);
   }
   return true;
 }
@@ -300,8 +402,7 @@ bool X86MDSFIControlGuard::runOnMachineFunction(MachineFunction &Fn) {
 
   bool hasIndirectJump = false;
   hasIndirectJump = CFIInstrument(Fn);
-  /* CFIInstrument(Fn); */
-  InsertCFILabel(Fn, hasIndirectJump);
+  InsertCFILabels(Fn, hasIndirectJump);
 
   // disable if for SPEC
   if (enableX86FSRelocate)
@@ -374,6 +475,27 @@ bool X86MDSFIControlGuard::RelocatePIC(MachineFunction &Fn) {
   return true;
 }
 
+bool X86MDSFIControlGuard::HandleCalls(MachineBasicBlock &MBB,
+                                       MachineInstr &MI) {
+  bool changed = false;
+  switch (MI.getOpcode()) {
+  default:
+    /* LLVM_DEBUG(dbgs() <<"Unhandled call instruction\t"<<MI<<"\n"); */
+    break;
+  case X86::CALL16r:
+  case X86::CALL32r:
+  case X86::CALL64r:
+    changed = HandleRegInst(MBB, MI, X86::R10);
+    break;
+  case X86::CALL16m:
+  case X86::CALL32m:
+  case X86::CALL64m:
+    changed = HandleMemInst(MBB, MI, X86::CALL64r, X86::R10, X86::R11);
+    break;
+  }
+  return changed;
+}
+
 bool X86MDSFIControlGuard::CFIInstrument(MachineFunction &Fn) {
   bool hasIndirectJump = false;
   for (auto &MBB : Fn) {
@@ -386,27 +508,14 @@ bool X86MDSFIControlGuard::CFIInstrument(MachineFunction &Fn) {
 
       MachineInstr &MI = *MBBI;
       MBBI = NMBBI;
-      if(MI.isReturn()){
-        HandleRet(MBB,MI);
-      }else if(MI.isIndirectBranch()){
+      if (MI.isReturn()) {
+        HandleRets(MBB, MI);
+      } else if (MI.isIndirectBranch()) {
         hasIndirectJump = true;
-        HandleIndirectBr(MBB,MI);
-      } else if(MI.isCall()){
-      switch (MI.getOpcode()) {
-      default:
-        /* LLVM_DEBUG(dbgs() <<"Unhandled call instruction\t"<<MI<<"\n"); */
-        break;
-      case X86::CALL16m:
-      case X86::CALL32m:
-      case X86::CALL64m:
-        HandleIndirectMemCall(MBB, MI);
-        break;
-      case X86::CALL16r:
-      case X86::CALL32r:
-      case X86::CALL64r:
-        HandleIndirectRegCall(MBB, MI);
-        break;
-      }
+        HandleIndirectBrs(MBB, MI);
+      } else if (MI.isCall()) {
+        // note some pseudo which is both return and call will not reach here
+        HandleCalls(MBB, MI);
       }
     }
   }
@@ -414,8 +523,8 @@ bool X86MDSFIControlGuard::CFIInstrument(MachineFunction &Fn) {
 }
 #undef DEBUG_TYPE
 
-INITIALIZE_PASS(X86MDSFIControlGuard, "mdsfi-cg-instrument", "CFI Instrument", false,
-                false)
+INITIALIZE_PASS(X86MDSFIControlGuard, "mdsfi-cg-instrument", "CFI Instrument",
+                false, false)
 
 FunctionPass *llvm::createX86MDSFIControlGuard() {
   return new X86MDSFIControlGuard();
