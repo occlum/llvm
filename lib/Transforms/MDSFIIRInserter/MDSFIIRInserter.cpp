@@ -39,8 +39,6 @@ private:
   Module *curModule;
   void insertCheck(Value *ptr, Instruction *I, bool isload);
   void handleInst(Instruction *I);
-  void handleIndirectBrInst(IndirectBrInst *IBI);
-  void handleTermInst(Instruction *I);
   bool ScanStorePtr(Value *u);
   std::set<Value *> StorePtrSet;
 };
@@ -75,30 +73,6 @@ void MDSFIIRInserterPass::insertCheck(Value *ptr, Instruction *I, bool isload) {
   return;
 }
 
-void MDSFIIRInserterPass::handleIndirectBrInst(IndirectBrInst *IBI) {
-  // TODO && FIXME
-  // handle it at IR level means we can avoid unnecessary jump table at backend
-  Value *dstAddress = IBI->getAddress();
-
-  IRBuilder<> B(IBI);
-  std::string AsmString, Constraints;
-  /* AsmString = "popq $0 \n addq ($0), $0\nbndcu $0, %bnd2\n"; */
-  AsmString = "bndcl ($0), %bnd2\nbndcu ($0), %bnd2\n";
-  Constraints = "r,~{dirflag},~{fpsr},~{flags}";
-
-  InlineAsm *IA = InlineAsm::get(
-      FunctionType::get(B.getVoidTy(), {dstAddress->getType()}, false),
-      AsmString, Constraints, /*hasSideEffect*/ true, false);
-  B.CreateCall(IA, {dstAddress});
-  return;
-}
-
-void MDSFIIRInserterPass::handleTermInst(Instruction *I) {
-  if (IndirectBrInst *IBI = dyn_cast<IndirectBrInst>(I)) {
-    handleIndirectBrInst(IBI);
-  }
-}
-
 void MDSFIIRInserterPass::handleInst(Instruction *I) {
   if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     insertCheck(LI->getOperand(0), LI, true);
@@ -110,9 +84,7 @@ void MDSFIIRInserterPass::handleInst(Instruction *I) {
       insertCheck(MTI->getRawSource(), MTI, true);
     }
     insertCheck(MI->getRawDest(), MI, false);
-  } else if (isa<TerminatorInst>(I)) {
-    handleTermInst(I);
-  }
+  } 
 }
 
 // This function scan a pointer to see if it's in writable region

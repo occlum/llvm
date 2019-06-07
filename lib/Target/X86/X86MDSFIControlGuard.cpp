@@ -11,6 +11,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/Passes.h"
 
 using namespace llvm;
@@ -40,11 +41,22 @@ public:
 
   const X86Subtarget *STI;
   const TargetInstrInfo *TII;
+  const TargetRegisterInfo *TRI;
+  std::unique_ptr<RegScavenger> RS;
 
+  /// This function will replace return instruction with a pop, CFI check and an indirect jump
   bool HandleRet(MachineBasicBlock &MBB, MachineInstr &MI);
+
   bool HandleIndirectBr(MachineBasicBlock &MBB, MachineInstr &MI);
+
+  /// Replace a memory-based indirect call with a memory load and register-based indirect call
+  /// also insert a CFI check before register-based indirect call 
   bool HandleIndirectMemCall(MachineBasicBlock &MBB, MachineInstr &MI);
+
+  /// Insert a CFI check before register-based indirect call
   bool HandleIndirectRegCall(MachineBasicBlock &MBB, MachineInstr &MI);
+
+  /// Insert CFI label before every function. If hasIndirectJump is true, then insert CFI labels before every basicblock either.
   bool InsertCFILabel(MachineFunction &Fn, bool hasIndirectJump);
 
   bool RelocatePIC(MachineFunction &Fn);
@@ -57,6 +69,16 @@ public:
 char X86MDSFIControlGuard::ID = 0;
 
 bool X86MDSFIControlGuard::HandleRet(MachineBasicBlock &MBB, MachineInstr &MI) {
+      switch (MI.getOpcode()) {
+      default:
+        LLVM_DEBUG(dbgs() <<"Unhandled return instruction\t"<<MI<<"\n");
+        return false;
+        break;
+      case X86::RET:
+      case X86::RETL:
+      case X86::RETQ:
+        break;
+      }
   const DebugLoc &DL = MI.getDebugLoc();
   // popq %r11
   BuildMI(MBB, MI, DL, TII->get(X86::POP64r), X86::R11);
@@ -82,17 +104,56 @@ bool X86MDSFIControlGuard::HandleRet(MachineBasicBlock &MBB, MachineInstr &MI) {
 
 bool X86MDSFIControlGuard::HandleIndirectBr(MachineBasicBlock &MBB,
                                             MachineInstr &MI) {
-  /* const DebugLoc &DL = MI.getDebugLoc(); */
-  /* LLVM_DEBUG(dbgs() << "HandleIndirectBr\n"); */
-  /* MachineInstr *LEA = BuildMI(MBB, MI, DL, TII->get(X86::LEA64r), X86::R10);
-   */
+  const DebugLoc &DL = MI.getDebugLoc();
+  LLVM_DEBUG(dbgs() << "HandleIndirectBr\n");
+  // No matter under what situation(Memory based jump or register based jump), we need a free register;
+  // Firstly we try to use RegisterScavenging
+  RegScavenger *RegSc = RS.get();
+  RegSc->enterBasicBlockEnd(MBB);
+  unsigned ScavReg = RegSc->scavengeRegisterBackwards(X86::GR64RegClass, MachineBasicBlock::iterator(MI),false,0);
+  if(ScavReg == 0){
+    LLVM_DEBUG(dbgs() <<"Can not find free register for indirect branch\n");
+    return false;
+  }
 
-  /* for (auto &MO : MI->operands()) { */
-  /* LEA->addOperand(MO); */
-  /* } */
-  /* BuildMI(MBB,MI,DL,TII->get(X86::JMP64r), X86::R10); */
-  /* MI->eraseFromParent(); */
-  return false;
+
+  LLVM_DEBUG(dbgs() <<"ScavReg for indirectBranch: "<< TRI->getRegAsmName(ScavReg)<<"\n");
+
+  unsigned TargetReg;
+  X86AddressMode AM;
+  MachineInstr *loadtarget;
+  switch (MI.getOpcode()) {
+  default:
+    LLVM_DEBUG(dbgs() <<"Unhandled indirect branch instruction\t"<<MI<<"\n");
+    return false;
+    break;
+  case X86::JMP16m:
+  case X86::JMP32m:
+  case X86::JMP64m:
+    // which physic register is used in this jump?
+    AM = getAddressFromInstr(&MI, 0);
+    TargetReg = AM.BaseType == X86AddressMode::RegBase? AM.Base.Reg : AM.IndexReg;
+    // movq (x), x
+    loadtarget = BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), TargetReg);
+    for (auto &MO : MI.operands()) {
+      loadtarget->addOperand(MO);
+      MI.RemoveOperand(MO.getIndex());
+    }
+    MI.setDesc(TII->get(X86::JMP64r));
+    MachineInstrBuilder(*MBB.getParent(), &MI).addReg(TargetReg);
+    break;
+  case X86::JMP16r:
+  case X86::JMP32r:
+  case X86::JMP64r:
+  TargetReg = MI.getOperand(0).getReg();
+    break;
+  }
+  // movq (%TargetReg) , %FreeReg load cfi lable
+  addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::MOV64rm), ScavReg),
+               TargetReg);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCU64rr), X86::BND2).addReg(ScavReg);
+  BuildMI(MBB, MI, DL, TII->get(X86::BNDCL64rr), X86::BND2).addReg(ScavReg);
+  return true;
 }
 
 // replace call memory to call register
@@ -225,7 +286,9 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
 
 bool X86MDSFIControlGuard::runOnMachineFunction(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
+  TRI = STI->getRegisterInfo();
   TII = STI->getInstrInfo();
+  RS.reset(new RegScavenger());
 
   if (Fn.getName().startswith("_boundchecker_"))
     return false;
@@ -242,16 +305,6 @@ bool X86MDSFIControlGuard::runOnMachineFunction(MachineFunction &Fn) {
   if (enableX86FSRelocate)
     RelocatePIC(Fn);
 
-  /* for (auto &MBB : Fn) { */
-  /*   if (MBB.empty()) */
-  /*     continue; */
-
-  /*   for (MachineBasicBlock::instr_iterator I = MBB.instr_begin(); */
-  /*        I != MBB.instr_end(); I++) { */
-  /*     MachineInstr &MI = *I; */
-  /* LLVM_DEBUG(dbgs() << "Machine Instr at end: << " << MI << "\n"); */
-  /* } */
-  /* } */
   return true;
 }
 
@@ -331,25 +384,15 @@ bool X86MDSFIControlGuard::CFIInstrument(MachineFunction &Fn) {
 
       MachineInstr &MI = *MBBI;
       MBBI = NMBBI;
+      if(MI.isReturn()){
+        HandleRet(MBB,MI);
+      }else if(MI.isIndirectBranch()){
+        hasIndirectJump = true;
+        HandleIndirectBr(MBB,MI);
+      } else if(MI.isCall()){
       switch (MI.getOpcode()) {
       default:
-        break;
-      // FIXME ret might have a imm to pop
-      case X86::RET:
-      case X86::RETL:
-      case X86::RETQ:
-        /* if(Fn.getName() == "main") */
-        /* 	continue; */
-        HandleRet(MBB, MI);
-        break;
-      case X86::JMP16m:
-      case X86::JMP32m:
-      case X86::JMP64m:
-      case X86::JMP16r:
-      case X86::JMP32r:
-      case X86::JMP64r:
-        hasIndirectJump = true;
-        HandleIndirectBr(MBB, MI);
+        /* LLVM_DEBUG(dbgs() <<"Unhandled call instruction\t"<<MI<<"\n"); */
         break;
       case X86::CALL16m:
       case X86::CALL32m:
@@ -361,6 +404,7 @@ bool X86MDSFIControlGuard::CFIInstrument(MachineFunction &Fn) {
       case X86::CALL64r:
         HandleIndirectRegCall(MBB, MI);
         break;
+      }
       }
     }
   }
