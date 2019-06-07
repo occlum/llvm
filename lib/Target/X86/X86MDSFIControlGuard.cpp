@@ -268,7 +268,9 @@ bool X86MDSFIControlGuard::InsertCFILabel(MachineFunction &Fn,
   // insert CFI_LABEL before every BB.
   // Because there are some indirect jump inside this funciton, it might
   // want to jump to any of BB at this function
-  for (auto &MBB : Fn) {
+  // We omit first basicblock because it's already have one CFI_LABEL
+  for (MachineFunction::iterator MBBI = ++Fn.begin() ;MBBI!=Fn.end();MBBI++) {
+    MachineBasicBlock &MBB = *MBBI;
     if (MBB.empty())
       continue;
     MachineBasicBlock::instr_iterator I = MBB.instr_begin();
