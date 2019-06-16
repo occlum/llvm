@@ -78,11 +78,6 @@ public:
 char X86MDSFIDataGuard::ID = 0;
 } // namespace
 
-/* //read metadata and extract constraint. */
-/* bool X86MDSFIDataGuard::ExtracatConstraint(){ */
-/*   return false; */
-/* } */
-
 #define DEBUG_TYPE "MDSFIDG"
 
 void X86MDSFIDataGuard::getAnalysisUsage(AnalysisUsage &AU) const {
@@ -150,7 +145,7 @@ bool X86MDSFIDataGuard::runOnMachineFunction(MachineFunction &Fn) {
   TRI = STI->getRegisterInfo();
   MLI = &getAnalysis<MachineLoopInfo>();
 
-  // if there are any indirectCall, then we can not optimize between basicblock
+  // if there are any indirectCall, then we can not optimize loops
   // in this function because any program may jump before any basicblock
   bool canOptimize = !hasIndirectCall(Fn);
 

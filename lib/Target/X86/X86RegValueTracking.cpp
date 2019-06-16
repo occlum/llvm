@@ -24,9 +24,37 @@ public:
   std::map<MachineBasicBlock *, RegsRange> OutRanges;
   std::map<MachineBasicBlock *, RegsRange> InRanges;
   bool isInRange(X86AddressMode &AM);
+  bool isCFILabel(MachineInstr *MI);
   bool isInRange(X86AddressMode &AM, RangeInfo R, RegsRange &Ranges);
   void init(MachineFunction &Fn);
 };
+
+bool X86RegValueTracking::isCFILabel(MachineInstr * MI) {
+  if( MI->getOpcode() != X86::NOOPL || MI->getNumOperands()!= 5){
+    return false;
+  }
+  MachineOperand MO = MI->getOperand(0);
+  if(!MO.isReg() || MO.getReg() != X86::RBX){
+    return false;
+  }
+  MO = MI->getOperand(1);
+  if(!MO.isImm() || MO.getImm() != 1){
+    return false;
+  }
+  MO = MI->getOperand(2);
+  if(!MO.isReg() || MO.getReg() != X86::RBX){
+    return false;
+  }
+  MO = MI->getOperand(3);
+  if(!MO.isImm() || MO.getImm() != 512){
+    return false;
+  }
+  MO = MI->getOperand(4);
+  if(!MO.isReg() || MO.getReg() != 0){
+    return false;
+  }
+  return true;
+}
 
 void X86RegValueTracking::init(MachineFunction &Fn) {
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
@@ -59,10 +87,8 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
   unsigned widen = 0;
   bool Changed = true;
 
-  LLVM_DEBUG(dbgs() << "compute Range\n");
   while (Changed) {
     Changed = false;
-    LLVM_DEBUG(dbgs() << "scaned one time\n");
     widen++;
 
     ReversePostOrderTraversal<MachineFunction *> RPOT(&Fn);
@@ -73,33 +99,15 @@ bool X86RegValueTracking::computeRange(MachineFunction &Fn) {
 
       for (auto &it : MBB->predecessors()) {
         MachineBasicBlock *beforeMBB = &*it;
-        LLVM_DEBUG(dbgs() << "OutRanges of ");
-        LLVM_DEBUG(beforeMBB->printAsOperand(dbgs(), false));
-        LLVM_DEBUG(dbgs() << ": " << OutRanges.at(beforeMBB));
         InRanges.at(MBB).merge(OutRanges.at(beforeMBB));
       }
-      LLVM_DEBUG(dbgs() << "InRanges of ");
-      LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-      LLVM_DEBUG(dbgs() << ": \n" << InRanges.at(MBB));
 
       transfer(MBB);
 
-      LLVM_DEBUG(dbgs() << "after transfer\n");
-      LLVM_DEBUG(dbgs() << "OutRanges of ");
-      LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-      LLVM_DEBUG(dbgs() << ": \n" << OutRanges.at(MBB));
-
       if (!oldout.equal(OutRanges.at(MBB))) {
         Changed = true;
-        LLVM_DEBUG(dbgs() << "different out ranges of ");
-        LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-        LLVM_DEBUG(dbgs() << " :\nold range " << oldout);
-        LLVM_DEBUG(dbgs() << "new range " << OutRanges.at(MBB));
         if (widen == WIDEN_GUARD) {
           OutRanges.at(MBB).setChangedUnknown(oldout);
-          LLVM_DEBUG(dbgs() << "after set changed unknown");
-          LLVM_DEBUG(MBB->printAsOperand(dbgs(), false));
-          LLVM_DEBUG(dbgs() << "new range " << OutRanges.at(MBB));
         }
       }
     }
@@ -123,12 +131,12 @@ void X86RegValueTracking::transfer(MachineBasicBlock *MBB) {
 void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   LLVM_DEBUG(dbgs() << *MI << "\n");
   int i = 0;
-  LLVM_DEBUG(dbgs() << "Machine Operands: ");
-  for (const MachineOperand &MO : MI->operands()) {
-    LLVM_DEBUG(dbgs() << " " << i << " : " << MO);
-    i++;
-  }
-  LLVM_DEBUG(dbgs() << "\n");
+  /* LLVM_DEBUG(dbgs() << "Machine Operands: "); */
+  /* for (const MachineOperand &MO : MI->operands()) { */
+  /*   LLVM_DEBUG(dbgs() << " " << i << " : " << MO); */
+  /*   i++; */
+  /* } */
+  /* LLVM_DEBUG(dbgs() << "\n"); */
   switch (MI->getOpcode()) {
   // check ;
   case X86::checkload64m:
@@ -257,7 +265,8 @@ void X86RegValueTracking::step(MachineInstr *MI, RegsRange &Ranges) {
   // call instruction
   // set all range to unknown;
   // actual should be CFI_LABEL
-  if (MI->isCall()) {
+  if (isCFILabel(MI)) {
+    LLVM_DEBUG(dbgs() << "Meet CFI label: " << *MI << "\n");
     Ranges.setAllUnknown();
     RangeInfo writeable(InWrite, 0, 0);
     Ranges.setRegRange(X86::RSP, writeable);
