@@ -24,12 +24,12 @@ public:
   std::map<MachineBasicBlock *, RegsRange> OutRanges;
   std::map<MachineBasicBlock *, RegsRange> InRanges;
   bool isInRange(X86AddressMode &AM);
-  bool isCFILabel(MachineInstr *MI);
+  bool isCFILabel(const MachineInstr *MI);
   bool isInRange(X86AddressMode &AM, RangeInfo R, RegsRange &Ranges);
   void init(MachineFunction &Fn);
 };
 
-bool X86RegValueTracking::isCFILabel(MachineInstr * MI) {
+bool X86RegValueTracking::isCFILabel(const MachineInstr * MI) {
   if( MI->getOpcode() != X86::NOOPL || MI->getNumOperands()!= 5){
     return false;
   }
@@ -351,6 +351,10 @@ bool X86RegValueTracking::isInRange(X86AddressMode &AM, RangeInfo R,
                                     RegsRange &Ranges) {
   bool calculable;
   if (AM.BaseType == X86AddressMode::RegBase) {
+    if (AM.Base.Reg == X86::RIP){
+      LLVM_DEBUG(dbgs() << "RIP as BaseReg\n");
+      return true;
+    }
     if (AM.GV != nullptr) {
       return false;
     }
