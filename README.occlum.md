@@ -38,8 +38,8 @@ Occlum LLVM toolchain can be used to compile C/C++ programs just like GCC, but w
     CLANG_BIN_PATH := $(shell clang -print-prog-name=clang)
     LLVM_PATH := $(abspath $(dir $(CLANG_BIN_PATH))../)
 
-    CFLAGS := -Xclang -load -Xclang $(LLVM_PATH)/lib/LLVMMDSFIIRInserter.so -fPIC
-    LDFLAGS := -fuse-ld=lld -pie
+    CFLAGS := -fPIC
+    LDFLAGS := -fuse-ld=ld -pie
 
 ### Extra Compiler Options
 

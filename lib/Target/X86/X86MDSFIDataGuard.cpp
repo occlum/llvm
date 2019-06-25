@@ -24,6 +24,9 @@ static cl::opt<bool>
     enableX86MDSFIDGOpt("enable-x86-mdsfidg-opt", cl::init(true), cl::Hidden,
                         cl::desc("Enable X86 MDSFI data guard optimization."));
 
+static cl::opt<bool>
+    NoSFI("disable-SFI", cl::desc("do not check memory operations"), cl::Hidden);
+
 static cl::opt<bool> enableX86MDSFIDGLoopOpt(
     "enable-x86-mdsfidg-loop-opt", cl::init(true), cl::Hidden,
     cl::desc("Enable X86 MDSFI data guard loop optimization."));
@@ -31,6 +34,10 @@ static cl::opt<bool> enableX86MDSFIDGLoopOpt(
 static cl::opt<bool> enableX86MDSFIDG("enable-x86-mdsfidg", cl::init(true),
                                       cl::Hidden,
                                       cl::desc("Enable X86 MDSFI data guard."));
+
+static cl::opt<bool> CheckStoreOnly("check-store-only", cl::init(true),
+                                     cl::desc("only check store operation"),
+                                     cl::Hidden);
 
 namespace llvm {
 void initializeX86MDSFIDataGuardPass(PassRegistry &);
@@ -59,10 +66,33 @@ public:
   }
 
   bool runOnMachineFunction(MachineFunction &Fn) override;
+
+  // This function scan the whole machine function and insert proper 
+  // data guards for each instruction that may load or store.
+  bool InsertDataGuards(MachineFunction &Fn) ;
+
+  // This function take AM as the target address and build one data guard
+  // isLoad means a guard for load or for store
+  // if check store only is used, only insert store guards
+  bool insertOneDG(MachineInstr &MI, X86AddressMode &AM, bool isLoad);
+
+  // This function take AM as the target address and build one data guard
+  // isLoad means a guard for load or for store
+  // if check store only is used, only insert store guards
+  bool insertOneDG(MachineInstr &MI, unsigned BaseReg, bool isLoad);
+  
+  // handle a instruction that may load or may store. I.e. this instruction 
+  // may load but won't store or vice verse.
+  bool handleLoadOrStore(MachineInstr &MI, bool isLoad);
+
+  // Handle instruction store and load 
+  bool handleLoadAndStore(MachineInstr &MI);
+
   bool OptimizeCheck(MachineFunction &Fn, bool canOpt);
   bool OptimizeLoop(MachineFunction &Fn);
   bool OptimizeMBB(MachineBasicBlock &MBB, X86RegValueTracking &RT);
   bool LoweringMI(MachineFunction &Fn);
+  bool getX86AddressFromInstr(const MachineInstr &MI, X86AddressMode &AM);
   void getAnalysisUsage(AnalysisUsage &AU) const override;
   bool isLoopBody(MachineBasicBlock *MBB, MachineLoop *L);
 
@@ -84,6 +114,7 @@ void X86MDSFIDataGuard::getAnalysisUsage(AnalysisUsage &AU) const {
   MachineFunctionPass::getAnalysisUsage(AU);
   AU.addRequired<MachineLoopInfo>();
 }
+
 bool X86MDSFIDataGuard::hasIndirectCall(MachineFunction &Fn) {
   for (auto &MBB : Fn) {
     if (MBB.empty())
@@ -98,12 +129,6 @@ bool X86MDSFIDataGuard::hasIndirectCall(MachineFunction &Fn) {
       case X86::JMP16m:
       case X86::JMP32m:
       case X86::JMP64m:
-      case X86::CALL16r:
-      case X86::CALL16m:
-      case X86::CALL32r:
-      case X86::CALL32m:
-      case X86::CALL64r:
-      case X86::CALL64m:
         return true;
       }
     }
@@ -129,7 +154,8 @@ bool X86MDSFIDataGuard::checkRSP(MachineFunction &Fn) {
           MachineInstr *NewMI = addDirectMem(
               BuildMI(Fn, DL, TII->get(X86::checkstore64m)), X86::RSP);
           MBB.insertAfter(MBBI, NewMI);
-          LLVM_DEBUG(dbgs() << "Insert a check of RSP\n" << *MI << "\n");
+          /* LLVM_DEBUG(dbgs() << "Insert a check of RSP\n" << *MI << "\n"); */
+          /* errs() << "Insert a check of RSP\n" << *MI << "\n"; */
           ret = true;
         }
       }
@@ -139,11 +165,196 @@ bool X86MDSFIDataGuard::checkRSP(MachineFunction &Fn) {
   return ret;
 }
 
+// This function will extract Address mode from an instruction
+// If there is no memory operands in MI, return false, otherwise return true
+bool X86MDSFIDataGuard::getX86AddressFromInstr(const MachineInstr &MI, X86AddressMode &AM){
+  const MCInstrDesc &Desc = MI.getDesc();
+  int MemRefBegin = X86II::getMemoryOperandNo(Desc.TSFlags);
+  if(MemRefBegin < 0)
+    return false;
+  MemRefBegin += X86II::getOperandBias(Desc);
+  AM = getAddressFromInstr(&MI, MemRefBegin);
+  return true;
+}
+
+bool X86MDSFIDataGuard::insertOneDG(MachineInstr &MI, X86AddressMode &AM, bool isLoad){
+  MachineBasicBlock &MBB= *MI.getParent();
+  const DebugLoc &DL = MI.getDebugLoc();
+  if(isLoad == true ) {
+    if(CheckStoreOnly)
+      return false;
+    addFullAddress(BuildMI(MBB, MI, DL, TII->get(X86::checkload64m)), AM);
+  } else {
+    addFullAddress(BuildMI(MBB, MI, DL, TII->get(X86::checkstore64m)), AM);
+  }
+  return true;
+}
+
+bool X86MDSFIDataGuard::insertOneDG(MachineInstr &MI, unsigned BaseReg, bool isLoad){
+  MachineBasicBlock &MBB= *MI.getParent();
+  const DebugLoc &DL = MI.getDebugLoc();
+  if(isLoad == true) {
+    if(CheckStoreOnly)
+      return false;
+    addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::checkload64m)), BaseReg);
+  } else {
+    addDirectMem(BuildMI(MBB, MI, DL, TII->get(X86::checkstore64m)), BaseReg);
+  }
+  return true;
+}
+
+// This function tackle a instruction only load or only store.
+bool X86MDSFIDataGuard::handleLoadOrStore(MachineInstr &MI, bool isLoad) {
+  const MCInstrDesc &MCID = MI.getDesc();
+  unsigned NumOfPotentialPointer = 0;
+  // instructions only store
+  X86AddressMode AM;
+  if(getX86AddressFromInstr(MI, AM) == true) {
+    //instructions that mayStore or mayLoad and have one memory operand
+    insertOneDG(MI, AM, isLoad);
+    NumOfPotentialPointer++;
+  }
+  const MCPhysReg *ImplicitUses = MCID.getImplicitUses();
+  // If it has implicit uses, we scan the implicit uses list and check if there
+  // are any potential pointer.
+  if(ImplicitUses){
+    for (unsigned i = 0; ImplicitUses[i]; ++i){
+      if(TRI->getPointerRegClass(*MI.getMF())->contains(ImplicitUses[i])){
+        if(ImplicitUses[i] == X86::RSP){
+          // we don't care RSP, just check it and omit it as a potential pointer
+          // Since we assumed that the RSP is used to access variable on stack, so we 
+          // do not treat it as an potential pointer.
+          insertOneDG(MI, X86::RSP, isLoad);
+        } else
+          NumOfPotentialPointer++;
+      }
+    }
+  }
+  // If this instruciton have use two potential pointers(we omit RSP)
+  // then there must be one implicitly used pointer.
+  // Since we don't konw whether should we check the implicitly used 
+  // register (maybe it's just an normal register but not a pointer)
+  // So we have to handle this kind of instructions ad-hoc(one by one).
+  // Every time the compiler encounter an instruction potentially implicitly 
+  // access memory but we can't handle, add it here like DIVs.
+  if(NumOfPotentialPointer > 1) {
+    switch(MI.getOpcode()){
+      default:
+        errs() << "mayStore or mayLoad: " <<MI;
+        break;
+        // mayLoad instructions we handle here
+        // mayStore instructions we handle here
+      case X86::DIV8m:
+      case X86::IDIV8m:
+      case X86::DIV16m:
+      case X86::IDIV16m:
+      case X86::DIV32m:
+      case X86::IDIV32m:
+      case X86::DIV64m:
+      case X86::IDIV64m:
+        insertOneDG(MI, AM, true);
+        break;
+    }
+  }
+  return true;
+}
+
+bool X86MDSFIDataGuard::handleLoadAndStore(MachineInstr &MI) {
+  // Even if the instruction may load and store at the same time,
+  // if it only have one potential pointer, we can check it
+  const MCInstrDesc &MCID = MI.getDesc();
+  unsigned NumOfPotentialPointer = 0, ImplicitReg = 0;
+  bool haveMemOp = false;
+   
+  X86AddressMode AM;
+  if(getX86AddressFromInstr(MI, AM) == true) {
+    haveMemOp = true;
+    NumOfPotentialPointer++;
+  }
+  const MCPhysReg *ImplicitUses = MCID.getImplicitUses();
+  // If it has implicit uses, we scan the implicit uses list and check if there
+  // are any potential pointer.
+  if(ImplicitUses){
+    for (unsigned i = 0; ImplicitUses[i]; ++i){
+      if(TRI->getPointerRegClass(*MI.getMF())->contains(ImplicitUses[i])){
+          NumOfPotentialPointer++;
+          ImplicitReg = ImplicitUses[i];
+      }
+    }
+  }
+
+  // Every time the compiler encounter an instruction potentially implicitly 
+  // access memory but we can't handle, add it here.
+  if(NumOfPotentialPointer == 1){
+    if(haveMemOp){
+      insertOneDG(MI, AM, false);
+      insertOneDG(MI, AM, true);
+    } else  {
+      insertOneDG(MI, ImplicitReg, false);
+      insertOneDG(MI, ImplicitReg, true);
+    }
+    return true;
+  }
+  
+  // If one instruction Both Load and Store and have more than one pointer, 
+  // we don't know which pointer is used for store and which for load.
+  // Hence we have to handle it ad-hoc:
+  // That is, once more instructions is reported, we handle it.
+  // Notice that we can't trusted the report. Here we are trying to construct 
+  // a benign compiler. This report code is just help us. we still may not 
+  // cover all instrutions.
+  switch(MI.getOpcode()) {
+    default:
+      errs() << "mayStore and mayLoad: " <<MI;
+      break;
+    case X86::checkstore64m:
+    case X86::checkload64m:
+      break;
+    case X86::PUSH64rmm:
+      // push read from AM and push into stack
+      insertOneDG(MI, AM, true);
+      insertOneDG(MI, X86::RSP, false);
+      break;
+    case X86::POP64rmm:
+      // pop read from stack and write to AM
+      insertOneDG(MI, AM, false);
+      insertOneDG(MI, X86::RSP, true);
+      break;
+  }
+  return true;
+}
+
+bool X86MDSFIDataGuard::InsertDataGuards(MachineFunction &Fn) {
+  for (MachineBasicBlock &MBB : Fn) {
+    if (MBB.empty())
+      continue;
+    for(auto &MI: MBB) {
+      // insert store guards
+      if(!MI.mayLoadOrStore()) {
+        // instructions won't access memory according to it's 
+        // attribute mayLoad and may Store. For in case, we dump the instruction.
+        LLVM_DEBUG(dbgs()<< "MI won't access memory" <<MI);
+      } else if(MI.mayStore() && !MI.mayLoad()) {
+        handleLoadOrStore(MI, false);
+      } else if(MI.mayLoad() && !MI.mayStore()) {
+        // instructions only load
+        handleLoadOrStore(MI, true);
+      } else if(MI.mayLoad() && MI.mayStore() ) {
+        handleLoadAndStore(MI);
+      }
+    } //end of MBB
+  } // end of Fn
+  return true;
+}
+
 bool X86MDSFIDataGuard::runOnMachineFunction(MachineFunction &Fn) {
+  if(NoSFI)
+    return false;
   STI = &static_cast<const X86Subtarget &>(Fn.getSubtarget());
   TII = STI->getInstrInfo();
   TRI = STI->getRegisterInfo();
   MLI = &getAnalysis<MachineLoopInfo>();
+  InsertDataGuards(Fn);
 
   // if there are any indirectCall, then we can not optimize loops
   // in this function because any program may jump before any basicblock
@@ -174,6 +385,7 @@ bool X86MDSFIDataGuard::runOnMachineFunction(MachineFunction &Fn) {
   LoweringMI(Fn);
   return true;
 }
+
 bool X86MDSFIDataGuard::OptimizeMBB(MachineBasicBlock &MBB,
                                     X86RegValueTracking &RT) {
   RangeInfo ReadRegion(InRead, GuardZoneSize, -GuardZoneSize);
@@ -225,6 +437,7 @@ bool X86MDSFIDataGuard::OptimizeMBB(MachineBasicBlock &MBB,
     RT.step(MI, Ranges);
     MBBI = NMBBI;
   }
+  return true;
 }
 
 // OptimizeCheck will store every eliminable MI in EliminableList
@@ -367,6 +580,7 @@ bool X86MDSFIDataGuard::hoist(MachineLoop *ML, MachineLoopInfo *MLI,
   for (MachineLoop *SubLoop : *ML) {
     hoist(SubLoop, MLI, CurLoopRT);
   }
+  return true;
 }
 
 bool X86MDSFIDataGuard::computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
@@ -412,6 +626,7 @@ bool X86MDSFIDataGuard::computeLoop(MachineLoop *ML, MachineLoopInfo *MLI,
   for (MachineLoop *SubLoop : *ML) {
     computeLoop(SubLoop, MLI, CurLoopRT);
   }
+  return true;
 }
 
 #if 0
@@ -499,6 +714,7 @@ bool X86MDSFIDataGuard::OptimizeLoop(MachineFunction &Fn) {
       computeLoop(ML, MLI, RT);
     }
   }
+  return true;
 }
 
 bool X86MDSFIDataGuard::LoweringMI(MachineFunction &Fn) {
