@@ -17,6 +17,7 @@
 #include "llvm/Analysis/LoopInfoImpl.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/Analysis/LoopIterator.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -143,3 +144,18 @@ LLVM_DUMP_METHOD void MachineLoop::dump() const {
   print(dbgs());
 }
 #endif
+
+//===----------------------------------------------------------------------===//
+// MachineLoopBlocksDFS implementation
+//
+
+/// Traverse the loop blocks and store the DFS result.
+/// Useful for clients that just want the final DFS result and don't need to
+/// visit blocks during the initial traversal.
+void MachineLoopBlocksDFS::perform(MachineLoopInfo *LI) {
+  MachineLoopBlocksTraversal Traversal(*this, LI);
+  for (MachineLoopBlocksTraversal::POTIterator POI = Traversal.begin(),
+                                        POE = Traversal.end();
+       POI != POE; ++POI)
+    ;
+}

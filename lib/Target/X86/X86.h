@@ -123,6 +123,12 @@ FunctionPass *createX86DiscriminateMemOpsPass();
 /// This pass applies profiling information to insert cache prefetches.
 FunctionPass *createX86InsertPrefetchPass();
 
+/// This pass for MDSFI Data guards.
+FunctionPass *createX86MDSFIDataGuard();
+
+/// This pass for MDSFI Control Guards at backend
+FunctionPass *createX86MDSFIControlGuard();
+
 InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
                                                   X86Subtarget &,
                                                   X86RegisterBankInfo &);

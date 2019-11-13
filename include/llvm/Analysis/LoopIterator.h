@@ -25,10 +25,16 @@
 
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/CodeGen/MachineLoopInfo.h"
 
 namespace llvm {
 
 class LoopBlocksTraversal;
+class MachineLoopBlocksTraversal;
+class MachineLoop;
+class MachineLoopInfo;
+class MachineBasicBlock;
+class MachineFunction;
 
 // A traits type that is intended to be used in graph algorithms. The graph
 // traits starts at the loop header, and traverses the BasicBlocks that are in
@@ -253,7 +259,130 @@ inline void po_iterator_storage<LoopBlocksTraversal, true>::
 finishPostorder(BasicBlock *BB) {
   LBT.finishPostorder(BB);
 }
+class MachineLoopBlocksDFS {
+public:
+  typedef std::vector<MachineBasicBlock *>::const_iterator POIterator;
+  typedef std::vector<MachineBasicBlock*>::const_reverse_iterator RPOIterator;
 
+  friend class MachineLoopBlocksTraversal;
+
+private:
+  MachineLoop *L;
+
+  DenseMap<MachineBasicBlock*, unsigned> PostNumbers;
+  std::vector<MachineBasicBlock*> PostBlocks;
+public:
+  MachineLoopBlocksDFS(MachineLoop *Container):
+  L(Container),PostNumbers(NextPowerOf2(Container->getNumBlocks())) {
+    PostBlocks.reserve(Container->getNumBlocks());
+  }
+
+  MachineLoop *getLoop() const {return L;}
+  void perform(MachineLoopInfo *MLI);
+  bool isComplete() const{return PostBlocks.size() == L->getNumBlocks();}
+
+  POIterator beginPostorder() const {
+    assert(isComplete() && "bad Loop DFS");
+    return PostBlocks.begin();
+  }
+  POIterator endPostorder() const{return PostBlocks.end();}
+
+  RPOIterator beginRPO() const {
+    assert(isComplete() && "bad Loop DFS");
+    return PostBlocks.rbegin();
+  }
+  RPOIterator endRPO() const {return PostBlocks.rend();}
+  bool hasPreorder(MachineBasicBlock *BB) const {return PostNumbers.count(BB);}\
+  bool hasPostorder(MachineBasicBlock *BB) const {
+    DenseMap<MachineBasicBlock *, unsigned> :: const_iterator I = PostNumbers.find(BB);
+    return I != PostNumbers.end() && I->second;
+  }
+  void clear() {
+    PostNumbers.clear();
+    PostBlocks.clear();
+  }
+};
+
+ /// Wrapper class to LoopBlocksDFS that provides a standard begin()/end()
+ /// interface for the DFS reverse post-order traversal of blocks in a loop body.
+ class MachineLoopBlocksRPO {
+ private:
+   MachineLoopBlocksDFS DFS;
+
+ public:
+   MachineLoopBlocksRPO(MachineLoop *Container) : DFS(Container) {}
+
+   /// Traverse the loop blocks and store the DFS result.
+   void perform(MachineLoopInfo *LI) {
+     DFS.perform(LI);
+   }
+
+   /// Reverse iterate over the cached postorder blocks.
+   MachineLoopBlocksDFS::RPOIterator begin() const { return DFS.beginRPO(); }
+   MachineLoopBlocksDFS::RPOIterator end() const { return DFS.endRPO(); }
+ };
+
+/// Specialize po_iterator_storage to record postorder numbers.
+template<> class po_iterator_storage<MachineLoopBlocksTraversal, true> {
+  MachineLoopBlocksTraversal &LBT;
+public:
+  po_iterator_storage(MachineLoopBlocksTraversal &lbs) : LBT(lbs) {}
+  // These functions are defined below.
+  bool insertEdge(Optional<MachineBasicBlock *> From, MachineBasicBlock *To);
+  void finishPostorder(MachineBasicBlock *BB);
+};
+
+
+class MachineLoopBlocksTraversal{
+public:
+  typedef po_iterator<MachineBasicBlock*,MachineLoopBlocksTraversal, true> POTIterator;
+
+private:
+  MachineLoopBlocksDFS &DFS;
+  MachineLoopInfo *LI;
+
+public:
+  MachineLoopBlocksTraversal(MachineLoopBlocksDFS &Storage, MachineLoopInfo *LInfo) :
+  DFS(Storage), LI(LInfo){}
+  POTIterator begin() {
+    assert(DFS.PostBlocks.empty() && "Need clear DFS result before traversing");
+    assert(DFS.L->getNumBlocks() && "po_iterator cannot handle an empty graph");
+    return po_ext_begin(DFS.L->getHeader(), *this);
+  }
+  POTIterator end() {
+     // po_ext_end interface requires a basic block, but ignores its value.
+     return po_ext_end(DFS.L->getHeader(), *this);
+   }
+   /// Called by po_iterator upon reaching a block via a CFG edge. If this block
+   /// is contained in the loop and has not been visited, then mark it preorder
+   /// visited and return true.
+   ///
+   /// TODO: If anyone is interested, we could record preorder numbers here.
+   bool visitPreorder(MachineBasicBlock *BB) {
+     if (!DFS.L->contains(LI->getLoopFor(BB)))
+       return false;
+
+     return DFS.PostNumbers.insert(std::make_pair(BB, 0)).second;
+   }
+   /// Called by po_iterator each time it advances, indicating a block's
+   /// postorder.
+   void finishPostorder(MachineBasicBlock *BB) {
+     assert(DFS.PostNumbers.count(BB) && "Loop DFS skipped preorder");
+     DFS.PostBlocks.push_back(BB);
+     DFS.PostNumbers[BB] = DFS.PostBlocks.size();
+   }
+
+};
+
+inline bool po_iterator_storage<MachineLoopBlocksTraversal, true>::insertEdge(
+    Optional<MachineBasicBlock *> From, MachineBasicBlock *To) {
+  return LBT.visitPreorder(To);
+}
+
+inline void po_iterator_storage<MachineLoopBlocksTraversal, true>::
+finishPostorder(MachineBasicBlock *BB) {
+  LBT.finishPostorder(BB);
+}
 } // End namespace llvm
 
 #endif

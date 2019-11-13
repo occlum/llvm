@@ -527,6 +527,8 @@ void X86PassConfig::addPreEmitPass2() {
       (!TT.isOSWindows() ||
        MAI->getExceptionHandlingType() == ExceptionHandling::DwarfCFI))
     addPass(createCFIInstrInserter());
+  addPass(createX86MDSFIControlGuard());
+  addPass(createX86MDSFIDataGuard());
 }
 
 std::unique_ptr<CSEConfigBase> X86PassConfig::getCSEConfig() const {

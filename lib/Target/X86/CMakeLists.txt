@@ -68,6 +68,9 @@ set(sources
   X86VZeroUpper.cpp
   X86WinAllocaExpander.cpp
   X86WinEHState.cpp
+  X86MDSFIDataGuard.cpp
+  X86MDSFIControlGuard.cpp
+  X86RegValueTracking.cpp
   )
 
 add_llvm_target(X86CodeGen ${sources})

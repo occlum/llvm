@@ -9,6 +9,10 @@
 // This file defines all of the X86-specific intrinsics.
 //
 //===----------------------------------------------------------------------===//
+let TargetPrefix = "x86" in {
+  def int_x86_checkload:Intrinsic<[],[llvm_anyptr_ty],[]>;
+  def int_x86_checkstore:Intrinsic<[],[llvm_anyptr_ty],[]>;
+}
 
 //===----------------------------------------------------------------------===//
 // Interrupt traps
