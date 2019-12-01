@@ -152,7 +152,7 @@ bool X86MDSFIControlGuard::HandleMemInst(MachineBasicBlock &MBB,
       RegScavenger *RegSc = RS.get();
       RegSc->enterBasicBlockEnd(MBB);
       TargetReg = RegSc->scavengeRegisterBackwards(
-          X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0);
+          X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0, false);
       if (TargetReg == 0) {
         LLVM_DEBUG(dbgs() << "Can not find free register for indirect branch\t"
                           << MI);
@@ -168,7 +168,7 @@ bool X86MDSFIControlGuard::HandleMemInst(MachineBasicBlock &MBB,
     RegScavenger *RegSc = RS.get();
     RegSc->enterBasicBlockEnd(MBB);
     LabelReg = RegSc->scavengeRegisterBackwards(
-        X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0);
+        X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0, false);
     if (LabelReg == 0) {
       LLVM_DEBUG(dbgs() << "Can not find free register for indirect branch\t"
                         << MI);
@@ -219,7 +219,7 @@ bool X86MDSFIControlGuard::HandleRegInst(MachineBasicBlock &MBB,
     RegScavenger *RegSc = RS.get();
     RegSc->enterBasicBlockEnd(MBB);
     LabelReg = RegSc->scavengeRegisterBackwards(
-        X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0);
+        X86::GR64RegClass, MachineBasicBlock::iterator(MI), false, 0, false);
     if (LabelReg == 0) {
       LLVM_DEBUG(dbgs() << "Can not find free register for indirect branch\t"
                         << MI);
