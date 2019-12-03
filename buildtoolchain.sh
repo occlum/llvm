@@ -1,5 +1,33 @@
-#!/bin/sh 
+#!/usr/bin/env bash
 #Usage If you want to install toolchain at a high privilege level location: sudo ./buildtoolchain.sh
+libcxxabipatch() {
+echo 'diff --git a/CMakeLists.txt b/CMakeLists.txt
+index aa0b124..abe66be 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -459,6 +459,8 @@ set(LIBCXXABI_LIBUNWIND_INCLUDES "${LIBCXXABI_LIBUNWIND_INCLUDES}" CACHE PATH
+     "Specify path to libunwind includes." FORCE)
+ set(LIBCXXABI_LIBUNWIND_PATH "${LIBCXXABI_LIBUNWIND_PATH}" CACHE PATH
+     "Specify path to libunwind source." FORCE)
++  set(LIBCXXABI_LIBUNWIND_LIBS "${LIBCXXABI_LIBUNWIND_LIBS}" CACHE PATH
++    "Specify path to libunwind libs." FORCE)
+ 
+ include_directories(include)
+ if (LIBCXXABI_USE_LLVM_UNWINDER OR LLVM_NATIVE_ARCH MATCHES ARM)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 45d4d02..373422e 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -260,7 +260,7 @@ if (LIBCXXABI_ENABLE_STATIC)
+         --ar "${CMAKE_AR}"
+         ${MERGE_ARCHIVES_LIBTOOL}
+         "$<TARGET_LINKER_FILE:cxxabi_static>"
+-        "$<TARGET_LINKER_FILE:unwind_static>"
++        ${LIBCXXABI_LIBUNWIND_LIBS}/libunwind.a
+       WORKING_DIRECTORY ${LIBCXXABI_BUILD_DIR}
+     )
+   endif()' > libcxxabi.patch
+ }
 
 SRCROOT=`pwd`/toolchain
 mkdir -p ${SRCROOT}
@@ -16,11 +44,15 @@ rm ${PREFIX}/* -rf
 #checkout repo
 git clone -b release_90 https://github.com/occlum/llvm
 git clone -b master https://github.com/occlum/musl
-git clone -b release_90 https://github.com/llvm-mirror/clang
-git clone -b release_90 https://github.com/llvm-mirror/libcxx
-git clone -b release_90 https://github.com/llvm-mirror/libcxxabi
-git clone -b release_90 https://github.com/llvm-mirror/libunwind
-git clone -b release_90 https://github.com/llvm-mirror/compiler-rt
+git clone -b release_90 https://github.com/llvm-mirror/clang 
+pushd clang && git reset bed37d4b18ce6 --hard && popd
+git clone -b release_90 https://github.com/llvm-mirror/libcxx 
+pushd libcxx && git reset 2076f539f4 --hard && popd
+git clone -b release_90 https://github.com/llvm-mirror/libcxxabi && pushd libcxxabi && git reset a88633b4 --hard &&  libcxxabipatch && git apply --whitespace=fix ../../libcxxabi.patch && popd
+git clone -b release_90 https://github.com/llvm-mirror/libunwind 
+pushd libunwind && git reset efd17a11b0fae2 --hard && popd
+git clone -b release_90 https://github.com/llvm-mirror/compiler-rt 
+pushd compiler-rt && git reset 1dd2eb5ffc3a --hard && popd
 
 # first stage
 mkdir stage_1
@@ -99,7 +131,7 @@ printf "build libcxxabi\n"
 mkdir libcxxabi
 pushd libcxxabi
 rm * -rf
-cmake ../../libcxxabi -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${PREFIX} -DCMAKE_C_COMPILER=musl-clang -DCMAKE_CXX_COMPILER=musl-clang -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON -DLIBCXXABI_ENABLE_SHARED=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=ON -DCMAKE_C_FLAGS="-fPIC " -DCMAKE_CXX_FLAGS="-fPIC " -DLIBCXXABI_LIBCXX_PATH=../../libcxx -DLLVM_ENABLE_LIBCXX=ON -DLIBCXXABI_USE_COMPILER_RT=ON
+cmake ../../libcxxabi -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${PREFIX} -DCMAKE_C_COMPILER=musl-clang -DCMAKE_CXX_COMPILER=musl-clang -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON -DLIBCXXABI_ENABLE_SHARED=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=ON -DCMAKE_C_FLAGS="-fPIC " -DCMAKE_CXX_FLAGS="-fPIC " -DLIBCXXABI_LIBCXX_PATH=../../libcxx -DLLVM_ENABLE_LIBCXX=ON -DLIBCXXABI_USE_COMPILER_RT=ON -DLIBCXXABI_LIBUNWIND_INCLUDES=../../libunwind/include -DLIBCXXABI_LIBUNWIND_PATH=../../libunwind -DLIBCXXABI_LIBUNWIND_LIBS=../libunwind/lib/
 make install -j \
   || { printf "build libcxxabi failed\n"; exit 1; }
 popd
